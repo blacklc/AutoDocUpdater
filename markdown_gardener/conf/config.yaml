@@ -1,0 +1,49 @@
+# LLM 配置文件
+# 用于配置 LLM 提供者和模型参数
+# 所有配置通过此文件管理，不再使用环境变量
+
+# LLM 提供者类型: openai, anthropic, azure_openai, google_vertexai, litellm
+provider: litellm
+
+# 默认模型配置
+model:
+  # OpenAI
+  openai: gpt-4o
+  # Anthropic
+  anthropic: claude-opus-4-6
+  # Azure OpenAI
+  azure_openai: gpt-4o
+  # Google Vertex AI
+  google_vertexai: gemini-pro
+  # LiteLLM 代理
+  litellm: minimax-m2.7
+
+# OpenAI 配置
+openai:
+  api_key: ""  # 设置你的 API 密钥
+
+# Anthropic 配置
+anthropic:
+  api_key: ""  # 设置你的 API 密钥
+
+# Azure OpenAI 配置
+azure_openai:
+  api_key: ""
+  azure_endpoint: ""  # 例如: https://your-resource.openai.azure.com/
+  api_version: "2024-02-01"
+
+# Google Vertex AI 配置
+google_vertexai:
+  project_id: ""  # GCP 项目 ID
+  location: "us-central1"
+
+# LiteLLM 代理配置
+litellm:
+  api_base: "http://localhost:4000"  # LiteLLM 代理服务器地址
+  api_key: "sk-KTCqa2aigDsZpT.Z*oU.giDLPLW"  # LiteLLM master key
+
+# 生成参数
+generation:
+  max_tokens: 131072  # 128K, within minimax-2.7 limit
+  temperature: 0.7
+  top_p: 1.0
