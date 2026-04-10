@@ -13,15 +13,7 @@
 
 ## 安装
 
-```bash
-pip install doc_exporter
-```
-
-或直接使用源码：
-
-```bash
-python -m doc_exporter.doc_exporter --help
-```
+无需安装，直接使用脚本路径调用。
 
 ## 使用方法
 
@@ -29,16 +21,16 @@ python -m doc_exporter.doc_exporter --help
 
 ```bash
 # 导出单篇文章（Markdown 格式）
-python -m doc_exporter.doc_exporter -n "文章标题"
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -n "文章标题"
 
 # 导出多篇文章
-python -m doc_exporter.doc_exporter -n "文章1,文章2,文章3"
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -n "文章1,文章2,文章3"
 
 # 按标签导出
-python -m doc_exporter.doc_exporter -t "工作"
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -t "工作"
 
 # 导出为 PDF 格式
-python -m doc_exporter.doc_exporter -n "文章标题" -f pdf
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -n "文章标题" -f pdf
 ```
 
 ### 命令行参数
@@ -48,17 +40,17 @@ python -m doc_exporter.doc_exporter -n "文章标题" -f pdf
 | `-n, --names` | 要导出的备忘录文章名称，多个名称用逗号分隔 |
 | `-t, --tag` | 文章标签，用于筛选指定标签下的文章 |
 | `-f, --format` | 导出格式：`md`（默认）或 `pdf` |
-| `-d, --dir` | 导出文件存放目录，默认：`temp/` |
-| `-l, --log` | 日志文件路径，默认：`logs/doc_exporter.log` |
+| `-d, --dir` | 导出文件存放目录，默认：当前项目目录下的tmp目录中 |
+| `-l, --log` | 日志文件路径，默认：当前项目目录下的logs目录中 |
 
 ### 参数组合
 
 ```bash
 # 同时指定文章名称和标签：导出该标签下匹配名称的文章
-python -m doc_exporter.doc_exporter -n "文章1,文章2" -t "工作"
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -n "文章1,文章2" -t "工作"
 
 # 只指定标签：导出该标签下的所有文章
-python -m doc_exporter.doc_exporter -t "工作"
+python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -t "工作"
 ```
 
 ## 输出示例
@@ -104,21 +96,6 @@ python -m doc_exporter.doc_exporter -t "工作"
     ]
   }
 }
-```
-
-## 项目结构
-
-```
-AutoDocUpdater/
-├── doc_exporter/
-│   ├── __init__.py          # 包初始化
-│   ├── doc_exporter.py      # 主程序
-│   └── docs/
-│       └── README.md        # 本文档
-├── prompts/
-│   └── exporter.md          # 设计规格说明
-├── logs/                    # 日志目录（自动创建）
-└── temp/                    # 导出文件默认目录
 ```
 
 ## 日志

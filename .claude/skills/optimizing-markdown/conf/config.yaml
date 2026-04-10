@@ -16,7 +16,7 @@ model:
   # Google Vertex AI
   google_vertexai: gemini-pro
   # LiteLLM 代理
-  litellm: minimax-m2.7
+  litellm: smart-router
 
 # OpenAI 配置
 openai:
@@ -45,5 +45,6 @@ litellm:
 # 生成参数
 generation:
   max_tokens: 131072  # 128K, within minimax-2.7 limit
-  temperature: 0.7
-  top_p: 1.0
+  # max_tokens: 500000  # within kimi-k2.5 limit 
+  temperature: 0.4
+  top_p: 0.7

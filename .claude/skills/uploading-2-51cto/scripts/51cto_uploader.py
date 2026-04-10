@@ -31,7 +31,7 @@ class UploadResult:
 class ChromeDriverManager:
     """Chrome 浏览器驱动管理器"""
 
-    def __init__(self, driver_dir: str = "51cto_uploader/drivers/chromedriver-mac-x64"):
+    def __init__(self, driver_dir: str = "drivers/chromedriver-mac-x64"):
         """初始化 Chrome 驱动管理器
 
         @param driver_dir: Chrome driver 所在目录
@@ -126,7 +126,7 @@ class C51ctoUploader:
     def __init__(
         self,
         logger: Optional[logging.Logger] = None,
-        driver_dir: str = "51cto_uploader/drivers/chromedriver-mac-x64"
+        driver_dir: str = "drivers/chromedriver-mac-x64"
     ):
         """初始化 51CTO 上传器
 
@@ -155,6 +155,25 @@ class C51ctoUploader:
                 **data
             }
             getattr(self.logger, level.lower())(str(log_entry))
+
+    def _delete_local_file(self, file_path: str) -> bool:
+        """删除本地文件
+
+        @param file_path: 要删除的文件路径
+        @type  file_path: str
+        @return: 删除成功返回 True，失败返回 False
+        @rtype:  bool
+        """
+        try:
+            path = Path(file_path)
+            if path.exists() and path.is_file():
+                path.unlink()
+                self._log("info", {"event": "file_deleted", "file": str(path)})
+                return True
+            return False
+        except Exception as e:
+            self._log("warning", {"event": "file_delete_failed", "file": file_path, "error": str(e)})
+            return False
 
     def _get_browser(self) -> BrowserAutomation:
         """获取浏览器自动化实例
@@ -298,6 +317,9 @@ class C51ctoUploader:
             publish_button.click()
             self._log("info", {"event": "publish_clicked", "file": file_name})
 
+            # 检查是否出现违禁词弹窗提示框体，若出现则点击"继续发布"按钮
+            self._handle_prohibited_popup(file_name)
+
             # 选择文章分类
             category = wait.until(EC.element_to_be_clickable(("xpath", "//*[@id='oneLever']/div[22]")))
             category.click()
@@ -308,11 +330,11 @@ class C51ctoUploader:
             release_button.click()
             self._log("info", {"event": "release_clicked", "file": file_name})
 
-            # 等待页面响应
-            self._driver.implicitly_wait(5)
+            # 等待页面响应，增加等待时间确保发布完成
+            import time
+            time.sleep(5)
 
             # 检查是否发布成功
-            # 根据 XPath 检查成功提示元素: //*[@id="__layout"]/div/div[2]/div/div[1]/span
             try:
                 success_element = self._driver.find_element("xpath", "//*[@id='__layout']/div/div[2]/div/div[1]/span")
                 success_text = success_element.text
@@ -322,7 +344,7 @@ class C51ctoUploader:
             except Exception:
                 pass
 
-            # 备用检查：检查页面源码中是否包含成功标识
+            # 检查页面源码中是否包含成功标识
             page_source = self._driver.page_source
             if "success-word" in page_source and "发布成功" in page_source:
                 self._log("info", {"event": "publish_success", "file": file_name})
@@ -336,6 +358,50 @@ class C51ctoUploader:
             error_msg = str(e)
             self._log("error", {"event": "upload_failed", "file": file_name, "error": error_msg})
             return False, error_msg
+
+    def _handle_prohibited_popup(self, file_name: str) -> None:
+        """检查并处理违禁词弹窗提示框体
+
+        当文章内容包含 base64 图片编码时，点击"发布文章"按钮后会弹出违禁词提示框。
+        本方法检查该弹窗是否出现，若出现则点击"继续发布"按钮。
+
+        @param file_name: 当前处理的文件名称（用于日志）
+        @type  file_name: str
+        """
+        import time
+
+        # 违禁词弹窗提示框体 xpath
+        popup_xpath = "/html/body/div[2]/div[4]"
+        # 继续发布按钮 xpath
+        continue_button_xpath = "/html/body/div[2]/div[4]/div/div[4]/button[1]"
+
+        try:
+            # 等待弹窗出现
+            time.sleep(5)
+
+            # 检查弹窗是否存在
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            wait = WebDriverWait(self._driver, 3)
+            try:
+                popup = wait.until(EC.presence_of_element_located(("xpath", popup_xpath)))
+                if popup.is_displayed():
+                    self._log("info", {"event": "prohibited_popup_detected", "file": file_name})
+
+                    # 点击"继续发布"按钮
+                    continue_button = wait.until(EC.element_to_be_clickable(("xpath", continue_button_xpath)))
+                    continue_button.click()
+                    self._log("info", {"event": "continue_publish_clicked", "file": file_name})
+
+                    # 等待弹窗关闭
+                    time.sleep(1)
+            except Exception:
+                # 弹窗未出现，继续正常流程
+                self._log("info", {"event": "no_prohibited_popup", "file": file_name})
+        except Exception as e:
+            # 任何异常都记录但不中断流程
+            self._log("warning", {"event": "popup_check_error", "file": file_name, "error": str(e)})
 
     def upload_files(self, file_path: str) -> UploadResult:
         """上传文件或目录中的所有 Markdown 文件
@@ -378,6 +444,8 @@ class C51ctoUploader:
                 if success:
                     result.success_count += 1
                     result.success_files.append(file.stem)
+                    # 上传成功后自动删除本地文件
+                    self._delete_local_file(str(file))
                 else:
                     result.fail_count += 1
                     result.fail_files.append((file.stem, msg))
@@ -430,16 +498,22 @@ class C51ctoUploader:
 FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d %(message)s"
 
 
-def setup_logging(log_file: str = "logs/51cto_uploader.log") -> logging.Logger:
+def setup_logging(log_file: str = None) -> logging.Logger:
     """配置日志系统
 
-    @param log_file: 日志文件路径，默认保存在项目根目录的 logs 目录
+    @param log_file: 日志文件路径，默认保存在 skill 目录所在目录的 logs 目录中
     @type  log_file: str
     @return: 配置好的日志记录器
     @rtype:  logging.Logger
     """
     logger = logging.getLogger("51cto_uploader")
     logger.setLevel(logging.DEBUG)
+
+    if log_file is None:
+        # 基于脚本文件位置计算路径，logs 目录与 skills 目录平级
+        script_path = Path(__file__)
+        logs_dir = script_path.parents[2] / "logs"
+        log_file = logs_dir / "51cto_uploader.log"
 
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -484,14 +558,14 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "-l", "--log",
-        default="logs/51cto_uploader.log",
-        help="日志文件路径, 默认: logs/51cto_uploader.log"
+        default=None,
+        help="日志文件路径, 默认: skill 目录所在目录的 logs 目录"
     )
 
     parser.add_argument(
         "--driver-dir",
-        default="51cto_uploader/drivers/chromedriver-mac-x64",
-        help="Chrome driver 目录, 默认: 51cto_uploader/drivers/chromedriver-mac-x64"
+        default="drivers/chromedriver-mac-x64",
+        help="Chrome driver 目录, 默认: drivers/chromedriver-mac-x64"
     )
 
     return parser.parse_args()

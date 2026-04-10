@@ -18,6 +18,24 @@ import yaml
 class LLMProvider(ABC):
     """LLM 提供者抽象基类"""
 
+    @classmethod
+    @abstractmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建提供者初始化参数
+
+        每个子类实现自己的配置解析逻辑，将特定配置转换为初始化参数。
+
+        @param config: 全局配置字典
+        @type  config: dict
+        @param model_config: model 部分的配置字典
+        @type  model_config: dict
+        @param override_kwargs: 用户传入的覆盖参数
+        @type  override_kwargs: dict
+        @return: 提供者初始化参数字典
+        @rtype:  dict
+        """
+        pass
+
     @abstractmethod
     def generate(self, prompt: str, **kwargs) -> str:
         """生成文本
@@ -42,6 +60,19 @@ class LLMProvider(ABC):
 
 class OpenAIProvider(LLMProvider):
     """OpenAI LLM 提供者"""
+
+    PROVIDER_NAME = "openai"
+
+    @classmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建 OpenAI 提供者参数"""
+        provider_config = config.get(cls.PROVIDER_NAME, {})
+
+        params = {
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "gpt-4o")),
+            "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+        }
+        return params
 
     def __init__(
         self,
@@ -102,6 +133,19 @@ class OpenAIProvider(LLMProvider):
 class AnthropicProvider(LLMProvider):
     """Anthropic LLM 提供者"""
 
+    PROVIDER_NAME = "anthropic"
+
+    @classmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建 Anthropic 提供者参数"""
+        provider_config = config.get(cls.PROVIDER_NAME, {})
+
+        params = {
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "claude-opus-4-6")),
+            "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+        }
+        return params
+
     def __init__(
         self,
         model_name: str = "claude-opus-4-6",
@@ -159,6 +203,21 @@ class AnthropicProvider(LLMProvider):
 
 class AzureOpenAIProvider(LLMProvider):
     """Azure OpenAI LLM 提供者"""
+
+    PROVIDER_NAME = "azure_openai"
+
+    @classmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建 Azure OpenAI 提供者参数"""
+        provider_config = config.get(cls.PROVIDER_NAME, {})
+
+        params = {
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "gpt-4o")),
+            "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+            "azure_endpoint": override_kwargs.pop("azure_endpoint", provider_config.get("azure_endpoint", "")),
+            "api_version": override_kwargs.pop("api_version", provider_config.get("api_version", "2024-02-01")),
+        }
+        return params
 
     def __init__(
         self,
@@ -228,6 +287,20 @@ class AzureOpenAIProvider(LLMProvider):
 class GoogleVertexAIProvider(LLMProvider):
     """Google Vertex AI LLM 提供者"""
 
+    PROVIDER_NAME = "google_vertexai"
+
+    @classmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建 Google Vertex AI 提供者参数"""
+        provider_config = config.get(cls.PROVIDER_NAME, {})
+
+        params = {
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "gemini-pro")),
+            "project_id": override_kwargs.pop("project_id", provider_config.get("project_id", "")),
+            "location": override_kwargs.pop("location", provider_config.get("location", "us-central1")),
+        }
+        return params
+
     def __init__(
         self,
         model_name: str = "gemini-pro",
@@ -291,6 +364,20 @@ class LiteLLMProvider(LLMProvider):
     支持通过 LiteLLM 代理调用多种 LLM，包括 MiniMax、GLM、Kimi 等。
     使用 Anthropic 兼容格式进行调用。
     """
+
+    PROVIDER_NAME = "litellm"
+
+    @classmethod
+    def build_params_from_config(cls, config: dict, model_config: dict, override_kwargs: dict) -> dict:
+        """从配置构建 LiteLLM 提供者参数"""
+        provider_config = config.get(cls.PROVIDER_NAME, {})
+
+        params = {
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "minimax-m2.7")),
+            "api_base": override_kwargs.pop("api_base", provider_config.get("api_base", "")),
+            "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+        }
+        return params
 
     def __init__(
         self,
@@ -452,46 +539,26 @@ class LLMClient:
     def _build_provider_params(self, override_kwargs: dict) -> dict:
         """构建提供者初始化参数
 
+        通过委托给具体的 Provider 类来消除 if-else 逻辑，符合开闭原则。
+        每个 Provider 子类通过 build_params_from_config 类方法负责解析自己的配置。
+
         @param override_kwargs: 覆盖配置的参数
         @type  override_kwargs: dict
         @return: 提供者初始化参数字典
         @rtype:  dict
         """
-        params = {}
+        # 获取对应的 Provider 类
+        provider_class = self.PROVIDER_CLASSES[self.provider_name]
 
-        # 获取模型名称
+        # 提取模型配置
         model_config = self.config.get("model", {})
-        params["model_name"] = override_kwargs.pop(
-            "model_name",
-            model_config.get(self.provider_name, model_config.get("openai", "gpt-4o"))
+
+        # 委托给 Provider 类构建其特定参数
+        params = provider_class.build_params_from_config(
+            self.config, model_config, override_kwargs.copy()
         )
 
-        # 根据不同提供者提取相应配置
-        if self.provider_name == "openai":
-            openai_config = self.config.get("openai", {})
-            params["api_key"] = override_kwargs.pop("api_key", openai_config.get("api_key", ""))
-
-        elif self.provider_name == "anthropic":
-            anthropic_config = self.config.get("anthropic", {})
-            params["api_key"] = override_kwargs.pop("api_key", anthropic_config.get("api_key", ""))
-
-        elif self.provider_name == "azure_openai":
-            azure_config = self.config.get("azure_openai", {})
-            params["api_key"] = override_kwargs.pop("api_key", azure_config.get("api_key", ""))
-            params["azure_endpoint"] = override_kwargs.pop("azure_endpoint", azure_config.get("azure_endpoint", ""))
-            params["api_version"] = override_kwargs.pop("api_version", azure_config.get("api_version", "2024-02-01"))
-
-        elif self.provider_name == "google_vertexai":
-            gcp_config = self.config.get("google_vertexai", {})
-            params["project_id"] = override_kwargs.pop("project_id", gcp_config.get("project_id", ""))
-            params["location"] = override_kwargs.pop("location", gcp_config.get("location", "us-central1"))
-
-        elif self.provider_name == "litellm":
-            litellm_config = self.config.get("litellm", {})
-            params["api_base"] = override_kwargs.pop("api_base", litellm_config.get("api_base", ""))
-            params["api_key"] = override_kwargs.pop("api_key", litellm_config.get("api_key", ""))
-
-        # 添加其他生成参数
+        # 添加通用的生成参数（max_tokens, temperature, top_p）
         generation_config = self.config.get("generation", {})
         for key in ["max_tokens", "temperature", "top_p"]:
             if key in generation_config:

@@ -320,7 +320,7 @@ class NotesExporter:
 FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d %(message)s"
 
 
-def setup_logging(log_file: str = "logs/doc_exporter.log") -> logging.Logger:
+def setup_logging(log_file: str = None) -> logging.Logger:
     """配置日志系统
 
     @param log_file: 日志文件路径，默认保存在项目根目录的 logs 目录
@@ -331,7 +331,15 @@ def setup_logging(log_file: str = "logs/doc_exporter.log") -> logging.Logger:
     logger = logging.getLogger("doc_exporter")
     logger.setLevel(logging.INFO)
 
+    if log_file is None:
+        # 基于脚本文件位置计算路径，logs 目录与 skills 目录平级
+        script_path = Path(__file__)
+        # .claude/skills/exporting-doc/scripts/ -> .claude/skills/
+        logs_dir = script_path.parents[2] / "logs"
+        log_file = logs_dir / "doc_exporter.log"
+
     log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     rotating_handler = logging.handlers.TimedRotatingFileHandler(
@@ -417,13 +425,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-d", "--dir",
         default="",
-        help="导出文件存放目录, 默认: 脚本所在目录下的 temp 目录"
+        help="导出文件存放目录, 默认: 当前项目目录下的tmp目录中"
     )
 
     parser.add_argument(
         "-l", "--log",
-        default="logs/doc_exporter.log",
-        help="日志文件路径, 默认: logs/doc_exporter.log"
+        default=None,
+        help="日志文件路径, 默认: 项目根目录下的 logs/doc_exporter.log"
     )
 
     return parser.parse_args()
@@ -620,8 +628,9 @@ def main() -> int:
         validate_arguments(args)
 
         if not args.dir:
-            script_dir = Path(__file__).parent
-            args.dir = str(script_dir / "temp")
+            # 默认保存到与 skills 目录平级的 tmp 目录
+            script_path = Path(__file__)
+            args.dir = str(script_path.parents[2] / "tmp")
 
         logger = setup_logging(args.log)
 

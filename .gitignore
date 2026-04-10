@@ -27,10 +27,11 @@ build/
 
 # Temporary files
 temp/
+tmp/
 *.tmp
 
 # Local settings
 settings.local.json
 
 # Chrome Driver
-51cto_uploader/drivers/
+drivers/

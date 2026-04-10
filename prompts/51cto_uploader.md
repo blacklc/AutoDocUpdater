@@ -83,6 +83,8 @@
 | 发布文章| /html/body/div[1]/div[1]/ul/li[2]/button |
 | 文章分类 | //*[@id="oneLever"]/div[22] |
 | 发布 | //*[@id="submitForm"] |
+| 违禁词弹窗提示框体 | /html/body/div[2]/div[4] |
+| 继续发布 | /html/body/div[2]/div[4]/div/div[4]/button[1] |
 
 ### 发布结果状态
 
