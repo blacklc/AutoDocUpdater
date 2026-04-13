@@ -305,11 +305,13 @@ class MarkdownGardener:
         return content, 0
 
     def _optimize_all_with_llm(self, article_content: str) -> str:
-        """三阶段优化：
-        阶段1：优化正文（分块，不生成前言和总结）
-        阶段2：生成摘要（分块）
-        阶段3：生成前言和总结
-        阶段4：组装最终结果
+        """五阶段优化：
+        阶段0：删除原文第一行（通常是标题行）
+        阶段1：移除 base64 图片
+        阶段2：优化正文（分块，不生成前言和总结）
+        阶段3：生成摘要（分块）
+        阶段4：生成前言和总结
+        阶段5：组装最终结果
 
         @param article_content: 文章完整内容
         @type  article_content: str
@@ -317,7 +319,17 @@ class MarkdownGardener:
         @rtype:  str
         @raises RuntimeError: LLM 调用失败时抛出
         """
-        # 阶段0：移除 base64 图片
+        # 阶段0：删除原文第一行（通常是标题行）
+        lines = article_content.split("\n")
+        if lines:
+            deleted_line = lines[0]
+            article_content = "\n".join(lines[1:])
+            self._log("info", {
+                "event": "first_line_removed",
+                "deleted_line": deleted_line[:50] + "..." if len(deleted_line) > 50 else deleted_line
+            })
+
+        # 阶段1：移除 base64 图片
         cleaned_content, _ = self._remove_base64_images(article_content)
 
         # 阶段1：优化正文（可能分块）

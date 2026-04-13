@@ -13,7 +13,7 @@ description: |
 
 ## 核心能力
 
-通过单次 LLM 调用完成 11 项自动化优化（详细说明见 `references/README.md`）：
+通过多阶段 LLM 调用完成 11 项自动化优化（详细说明见 `references/README.md`）：
 
 - 删除多余空白、转换 tips/注意 格式
 - 自动生成前言和总结章节、添加目录
@@ -39,11 +39,23 @@ python3 {skill_path}/scripts/markdown_gardener.py "/path/to/article.md"
 
 ## 工作流程
 
-1. **读取文件** — 加载 Markdown 文件内容
-2. **移除 base64 图片** — 避免 LLM context 溢出
-3. **内容分块** — 长文章（>100K 字符）自动在标题处分割处理
-4. **LLM 优化** — 单次调用完成全部 11 项优化
-5. **保存结果** — 直接覆盖原文件
+采用 6 阶段优化流程：
+
+1. **阶段0：删除原文第一行** — 删除原文的第一行内容（通常是标题行），避免重复
+2. **阶段1：移除 base64 图片** — 删除 base64 图片，避免 LLM context 溢出
+3. **阶段2：优化正文** — 根据文章长度决定是否分块处理，短文章直接优化，长文章在标题处分割
+4. **阶段3：生成摘要** — 对优化后的正文生成分段摘要
+5. **阶段4：生成前言和总结** — 基于摘要和正文上下文生成前言和总结
+6. **阶段5：组装最终结果** — 拼接前言、目录、正文、总结，保存到原文件
+
+## 长文章分块策略
+
+分块阈值根据配置文件中的 `max_tokens` 动态计算：
+- 正文优化 chunk：`max_tokens * 45%`
+- 摘要生成 chunk：`max_tokens * 10%`
+- 前言总结输入：`max_tokens * 15%`
+
+默认 `max_tokens=131072`，各 chunk 阈值约为 59K、13K、20K 字符。
 
 ## 输出格式
 
@@ -70,7 +82,7 @@ python3 {skill_path}/scripts/markdown_gardener.py "/path/to/article.md"
 ## 注意事项
 
 - **为文章添加配图**: 该操作的具体细节请参考`references/README.md中"为文章添加配图操作流程"这一章节.`
-- **长文章处理**：超过 100K 字符的文章会自动分块处理
+- **长文章处理**：分块阈值由配置文件的 `max_tokens` 动态计算，默认超过约 59K 字符的正文会自动分块处理
 
 ## 依赖
 
@@ -80,25 +92,7 @@ pip install pyyaml langchain-core langchain-anthropic
 
 ## 配置文件
 
-LLM 配置位于 `{skill_path}/conf/config.yaml`：
-
-```yaml
-provider: litellm
-
-litellm:
-  api_base: "http://localhost:4000"
-  api_key: "your-key"
-
-model:
-  litellm: minimax-m2.7
-  openai: gpt-4o
-  anthropic: claude-opus-4-6
-
-generation:
-  max_tokens: 131072
-  temperature: 0.7
-```
-
+优化的具体操作是通过调用llm来进行实现的, 因此功能中会涉及到调用llm. LLM的相关配置位于 `{skill_path}/conf/config.yaml`文件中.
 支持 OpenAI / Anthropic / Azure OpenAI / Google VertexAI / LiteLLM。
 
 ## 项目结构
@@ -107,12 +101,15 @@ generation:
 optimizing-markdown/
 ├── SKILL.md
 ├── scripts/
-│   ├── markdown_gardener.py
-│   └── llm_client.py
+│   ├── markdown_gardener.py  # 主入口脚本
+│   └── llm_client.py         # LLM 客户端封装
 ├── conf/
-│   └── config.yaml
+│   └── config.yaml           # LLM 提供者和模型配置
 ├── prompts/
-│   └── optimize.yaml
+│   ├── optimize.yaml         # 正文优化 prompt
+│   ├── optimize_body.yaml    # 分块正文优化 prompt
+│   ├── summary.yaml          # 摘要生成 prompt
+│   └── intro_summary.yaml    # 前言/总结生成 prompt
 └── references/
     └── README.md             # 完整的 11 项优化说明
 ```
