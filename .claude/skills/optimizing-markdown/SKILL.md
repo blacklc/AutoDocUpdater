@@ -29,6 +29,8 @@ description: |
 python3 {skill_path}/scripts/markdown_gardener.py "/path/to/article.md"
 ```
 
+> 注意: 该脚本的最大并行调用数为 3.
+
 ### 参数说明
 
 | 参数 | 说明 |
