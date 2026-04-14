@@ -45,20 +45,18 @@ template: |
    笔者也会将自己的理解在文中进行阐述,这也算是在和大家交流心得的一个过程。若文中有错误的理解和概念,请大家及时纠正;吸纳大家的建议,对于我来说也是很重要的学习过程之一。
    ```
 
-   - 示例4:
-   ```md
-   # 前言
-   本文主要会介绍笔者在学习Kubernetes Job Controller的实现原理时所总结的知识点,其中会涉及到`Job Controller的使用场景、实现原理以及控制循环`等方面的相关内容。
-   笔者也会将自己的理解在文中进行阐述,这也算是在和大家交流心得的一个过程。若文中有错误的理解和概念,请大家及时纠正;吸纳大家的建议,对于我来说也是很重要的学习过程之一。
-   ```
-
   ### 2.总结章节
   基于摘要，生成一段适当的总结，{summary_length}字左右，回顾核心知识点
 
   - 示例1:
    ```md
    # 总结
-   在Ansible的官方文档中写到过: “如果仅是需要通过脚本方式或自动化方式去调用Ansible,则推荐使用Ansible Runner来实现这一需求”。这也就代表着Ansible Runner这个项目是获得了Ansible的官方认可。笔者也经过亲自实战体会了Ansible Runner的优势。使用Ansible Runner调用Ansible,能够让我们更加容易的使用代码和Ansible进行交互,而且还无需担心Ansible版本升级后带来的代码反向依赖问题。Ansible Runner帮助我们将自研项目与Ansible之间实现了很好的解耦。Ansible Runner提供的远程任务执行功能让我们可以以更加灵活的方式去调度Ansible。Ansible Runner本身的学习成本也不是很高,项目中的大部分概念都与Ansible相同,其提供的API也简单易懂,非常容易上手。希望Ansible Runner能够帮助大家更好的将Ansible功能融入到自研服务/平台中。
+   在Ansible的官方文档中写到过: “如果仅是需要通过脚本方式或自动化方式去调用Ansible,则推荐使用Ansible Runner来实现这一需求”。
+   这也就代表着Ansible Runner这个项目是获得了Ansible的官方认可。笔者也经过亲自实战体会了Ansible Runner的优势。
+   使用Ansible Runner调用Ansible,能够让我们更加容易的使用代码和Ansible进行交互,而且还无需担心Ansible版本升级后带来的代码反向依赖问题。
+   Ansible Runner帮助我们将自研项目与Ansible之间实现了很好的解耦。Ansible Runner提供的远程任务执行功能让我们可以以更加灵活的方式去调度Ansible。
+   Ansible Runner本身的学习成本也不是很高,项目中的大部分概念都与Ansible相同,其提供的API也简单易懂,非常容易上手。
+   希望Ansible Runner能够帮助大家更好的将Ansible功能融入到自研服务/平台中。
    ```
 
    - 示例2:

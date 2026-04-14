@@ -149,6 +149,78 @@ class NotesExporter:
         self._export_note_to_pdf_via_notes(note_name, pdf_path)
         return str(pdf_path)
 
+    def _sanitize_note_name(self, note_name: str) -> str:
+        """清理文章名称中的多余空白和特殊字符
+
+        用于解决备忘录中文章名称与搜索时输入的名称格式不完全匹配的问题。
+        例如：多余的空格、特殊空白字符等。
+
+        @param note_name: 原始文章名称
+        @type  note_name: str
+        @return: 清理后的文章名称
+        @rtype:  str
+        """
+        import re
+        # 移除多余空白字符（保留单个空格）
+        note_name = re.sub(r'\s+', ' ', note_name)
+        # 移除首尾空白
+        note_name = note_name.strip()
+        return note_name
+
+    def _normalize_for_matching(self, note_name: str) -> str:
+        """标准化文章名称用于匹配搜索
+
+        移除所有空白字符并转为小写，用于模糊匹配。
+
+        @param note_name: 原始文章名称
+        @type  note_name: str
+        @return: 标准化后的名称
+        @rtype:  str
+        """
+        import re
+        # 移除所有空白字符并转为小写
+        return re.sub(r'\s+', '', note_name).lower()
+
+    def _find_note_by_fuzzy_match(self, note_name: str) -> Optional[str]:
+        """通过模糊匹配查找备忘录文章
+
+        当精确匹配失败时，使用标准化后的名称进行模糊匹配。
+
+        @param note_name: 文章名称
+        @type  note_name: str
+        @return: 匹配到的实际文章名称，匹配失败时返回 None
+        @rtype:  Optional[str]
+        """
+        script = '''
+        tell application "Notes"
+            set allNotes to every note
+            return name of allNotes
+        end tell
+        '''
+
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            all_names = result.stdout.strip()
+            if not all_names or all_names == "{}":
+                return None
+
+            target_normalized = self._normalize_for_matching(note_name)
+
+            # 遍历所有文章名称进行模糊匹配
+            for name in all_names.split(","):
+                name = name.strip()
+                if self._normalize_for_matching(name) == target_normalized:
+                    return name
+
+            return None
+        except Exception:
+            return None
+
     def _get_note_content(self, note_name: str) -> Optional[str]:
         """通过 AppleScript 获取备忘录文章内容
 
@@ -157,9 +229,12 @@ class NotesExporter:
         @return: 文章内容，文章不存在时返回 None
         @rtype:  Optional[str]
         """
+        # 先尝试清理后的精确名称
+        sanitized_name = self._sanitize_note_name(note_name)
+
         script = f'''
         tell application "Notes"
-            set theNote to first note whose name is "{note_name}"
+            set theNote to first note whose name is "{sanitized_name}"
             if exists theNote then
                 return body of theNote
             else
@@ -178,9 +253,17 @@ class NotesExporter:
             content = result.stdout.strip()
 
             if content == "NOTE_NOT_FOUND":
+                # 尝试模糊匹配
+                matched_name = self._find_note_by_fuzzy_match(note_name)
+                if matched_name:
+                    return self._get_note_content(matched_name)
                 return None
             return content
         except Exception:
+            # 尝试模糊匹配作为最后的备选方案
+            matched_name = self._find_note_by_fuzzy_match(note_name)
+            if matched_name:
+                return self._get_note_content(matched_name)
             return None
 
     def get_notes_by_tag_or_folder(self, tag_or_folder: str) -> list[str]:

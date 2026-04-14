@@ -29,8 +29,6 @@ description: |
 python3 {skill_path}/scripts/markdown_gardener.py "/path/to/article.md"
 ```
 
-> 注意: 在同一时间内, 最多运行3个优化任务.
-
 ### 参数说明
 
 | 参数 | 说明 |
