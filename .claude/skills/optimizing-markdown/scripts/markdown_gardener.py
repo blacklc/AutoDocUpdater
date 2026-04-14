@@ -484,7 +484,7 @@ class MarkdownGardener:
             chunk_index=1,
             total_chunks=1,
             content=content_input,
-            summary_length=200
+            summary_length=400
         )
 
         llm_client = self._get_llm_client()
@@ -528,7 +528,7 @@ class MarkdownGardener:
                 chunk_index=i + 1,
                 total_chunks=total_chunks,
                 content=chunk,
-                summary_length=150
+                summary_length=300
             )
 
             llm_client = self._get_llm_client()
@@ -563,13 +563,11 @@ class MarkdownGardener:
         @rtype:  dict
         """
         # 限制输入长度
-        summary_input = summary[:10000] if len(summary) > 10000 else summary
-        body_for_context = optimized_body[:15000] if len(optimized_body) > 15000 else optimized_body
+        summary_input = summary[:20000] if len(summary) > 20000 else summary
 
         prompt = self._load_prompt(
             "intro_summary",
             summary=summary_input,
-            body_context=body_for_context,
             intro_length=100,
             summary_length=150
         )
