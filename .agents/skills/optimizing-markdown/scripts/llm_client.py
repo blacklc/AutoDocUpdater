@@ -14,6 +14,17 @@ from typing import Any, Optional
 
 import yaml
 
+from env_config import (
+    CONFIG_PATH,
+    EnvironmentConfigurationError,
+    apply_environment_overrides,
+    check_environment,
+)
+
+
+_SKILL_ROOT = Path(__file__).resolve().parent.parent
+_PROMPTS_DIR = _SKILL_ROOT / "prompts"
+
 
 class LLMProvider(ABC):
     """LLM 提供者抽象基类"""
@@ -71,6 +82,7 @@ class OpenAIProvider(LLMProvider):
         params = {
             "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "gpt-4o")),
             "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+            "api_base": override_kwargs.pop("api_base", provider_config.get("api_base", "")),
         }
         return params
 
@@ -78,18 +90,22 @@ class OpenAIProvider(LLMProvider):
         self,
         model_name: str = "gpt-4o",
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
         **kwargs
     ):
         """初始化 OpenAI 提供者
 
         @param model_name: 模型名称
         @type  model_name: str
-        @param api_key: API 密钥（从配置文件读取）
+        @param api_key: API 密钥（从环境变量合并后的配置读取）
         @type  api_key: Optional[str]
+        @param api_base: OpenAI 兼容 API 地址
+        @type  api_base: Optional[str]
         @param kwargs: 其他参数
         """
         self.model_name = model_name
         self.api_key = api_key
+        self.api_base = api_base
         self.kwargs = kwargs
 
         if not self.api_key:
@@ -106,6 +122,7 @@ class OpenAIProvider(LLMProvider):
                 self._langchain_model = ChatOpenAI(
                     model=self.model_name,
                     api_key=self.api_key,
+                    **({"base_url": self.api_base} if self.api_base else {}),
                     **self.kwargs
                 )
             except ImportError:
@@ -143,6 +160,7 @@ class AnthropicProvider(LLMProvider):
         params = {
             "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "claude-opus-4-6")),
             "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
+            "api_base": override_kwargs.pop("api_base", provider_config.get("api_base", "")),
         }
         return params
 
@@ -150,18 +168,22 @@ class AnthropicProvider(LLMProvider):
         self,
         model_name: str = "claude-opus-4-6",
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
         **kwargs
     ):
         """初始化 Anthropic 提供者
 
         @param model_name: 模型名称
         @type  model_name: str
-        @param api_key: API 密钥（从配置文件读取）
+        @param api_key: API 密钥（从环境变量合并后的配置读取）
         @type  api_key: Optional[str]
+        @param api_base: Anthropic 兼容 API 地址
+        @type  api_base: Optional[str]
         @param kwargs: 其他参数
         """
         self.model_name = model_name
         self.api_key = api_key
+        self.api_base = api_base
         self.kwargs = kwargs
 
         if not self.api_key:
@@ -177,6 +199,7 @@ class AnthropicProvider(LLMProvider):
                 self._langchain_model = ChatAnthropic(
                     model=self.model_name,
                     api_key=self.api_key,
+                    **({"base_url": self.api_base} if self.api_base else {}),
                     **self.kwargs
                 )
             except ImportError:
@@ -231,7 +254,7 @@ class AzureOpenAIProvider(LLMProvider):
 
         @param model_name: 部署名称
         @type  model_name: str
-        @param api_key: API 密钥（从配置文件读取）
+        @param api_key: API 密钥（从环境变量合并后的配置读取）
         @type  api_key: Optional[str]
         @param azure_endpoint: Azure 端点（从配置文件读取）
         @type  azure_endpoint: Optional[str]
@@ -373,7 +396,7 @@ class LiteLLMProvider(LLMProvider):
         provider_config = config.get(cls.PROVIDER_NAME, {})
 
         params = {
-            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "minimax-m2.7")),
+            "model_name": override_kwargs.pop("model_name", model_config.get(cls.PROVIDER_NAME, "deepseek-flash")),
             "api_base": override_kwargs.pop("api_base", provider_config.get("api_base", "")),
             "api_key": override_kwargs.pop("api_key", provider_config.get("api_key", "")),
         }
@@ -381,18 +404,18 @@ class LiteLLMProvider(LLMProvider):
 
     def __init__(
         self,
-        model_name: str = "minimax-m2.7",
+        model_name: str = "deepseek-flash",
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         **kwargs
     ):
         """初始化 LiteLLM 提供者
 
-        @param model_name: 模型名称，默认 minimax-m2.7
+        @param model_name: 模型名称，默认 deepseek-flash
         @type  model_name: str
         @param api_base: LiteLLM 代理服务器地址（从配置文件读取）
         @type  api_base: Optional[str]
-        @param api_key: API 密钥（从配置文件读取）
+        @param api_key: API 密钥（从环境变量合并后的配置读取）
         @type  api_key: Optional[str]
         @param kwargs: 其他参数
         """
@@ -499,14 +522,20 @@ class LLMClient:
         """
         # 加载配置文件
         if config_path:
-            self.config = self._load_config(config_path)
+            config = self._load_config(config_path)
         else:
-            # 默认使用当前模块目录下的 conf/config.yaml
-            default_path = Path(__file__).parent / "conf" / "config.yaml"
-            self.config = self._load_config(str(default_path))
+            config = self._load_config(str(CONFIG_PATH))
+
+        self.config = apply_environment_overrides(config)
+        if provider:
+            self.config["provider"] = provider
+        status = check_environment(self.config)
+        if not status.configured:
+            raise EnvironmentConfigurationError(status)
+        self.config = status.config
 
         # 确定使用的提供者
-        self.provider_name = provider or self.config.get("provider", "openai")
+        self.provider_name = self.config.get("provider", "openai")
 
         if self.provider_name not in self.PROVIDER_CLASSES:
             raise ValueError(
@@ -601,8 +630,7 @@ class PromptTemplate:
         if template_dir:
             self.template_dir = Path(template_dir)
         else:
-            # 默认使用当前模块目录下的 prompts 文件夹
-            self.template_dir = Path(__file__).parent / "prompts"
+            self.template_dir = _PROMPTS_DIR
 
         self._templates: dict[str, str] = {}
 

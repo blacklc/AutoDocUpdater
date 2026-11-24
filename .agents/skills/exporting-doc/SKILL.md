@@ -9,8 +9,8 @@ metadata:
 
 ## 如何使用此 Skill
 
-1. 脚本路径：`.claude/skills/exporting-doc/scripts/doc_exporter.py`（相对于项目根目录）
-2. 调用示例：`python3 .claude/skills/exporting-doc/scripts/doc_exporter.py -t "标签名"`
+1. 脚本路径：`.agents/skills/exporting-doc/scripts/doc_exporter.py`（相对于项目根目录）
+2. 调用示例：`python3 .agents/skills/exporting-doc/scripts/doc_exporter.py -t "标签名"`
 3. 详细用法参考 `references/README.md` 中的「使用方法」章节
 
 如果 skills 目录位置有变动，请相应调整路径。
@@ -38,7 +38,10 @@ metadata:
 
 1. **辅助功能权限**：导出 PDF 功能需要 macOS 辅助功能权限，请在 `系统设置 > 隐私与安全性 > 辅助功能` 中授权。
 2. **参数要求**：`--names` 和 `--tag` 至少需要指定一个。
-3. **PDF 导出**：PDF 导出使用备忘录应用的原生导出功能，会临时在桌面生成文件后移动到目标目录。
+3. **PDF 导出**：PDF 导出会等待“保存”面板就绪，使用默认文章标题作为文件名自动保存，再移动到目标目录。桌面上已有同名 PDF 时会安全拒绝，不会自动覆盖；保存失败会关闭残留面板并报告原因。
+4. **查询超时**：标签/文件夹查询最多等待 120 秒；超时、AppleScript 失败和文章不存在会返回不同错误，不会把查询失败误报为“未找到文章”。
+5. **AppleScript 传输稳定性**：脚本通过临时文件执行 AppleScript，并对 `hiservices-xpcservice` 连接失效等瞬时错误进行一次底层重试；导出业务层仍保持不重试。
+6. **禁止并发**：导出进程会获取 `tmp/notes_exporter.lock` 全局锁，并在访问备忘录前执行健康检查。已有其他导出任务运行时，新任务会明确报错退出，避免多个 AppleScript 任务并发导致 XPC 通信异常。
 
 ---
 

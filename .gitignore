@@ -32,6 +32,5 @@ tmp/
 
 # Local settings
 settings.local.json
-
-# Chrome Driver
-drivers/
+.mcp.json
+.env

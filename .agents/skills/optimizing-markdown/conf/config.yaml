@@ -1,6 +1,5 @@
-# LLM 配置文件
-# 用于配置 LLM 提供者和模型参数
-# 所有配置通过此文件管理，不再使用环境变量
+# LLM 非敏感配置
+# 密钥通过 AUTODOC_LLM_* 环境变量提供，不得写入本文件
 
 # LLM 提供者类型: openai, anthropic, azure_openai, google_vertexai, litellm
 provider: litellm
@@ -16,19 +15,16 @@ model:
   # Google Vertex AI
   google_vertexai: gemini-pro
   # LiteLLM 代理
-  litellm: smart-router
+  litellm: deepseek-flash
 
 # OpenAI 配置
-openai:
-  api_key: ""  # 设置你的 API 密钥
+openai: {}
 
 # Anthropic 配置
-anthropic:
-  api_key: ""  # 设置你的 API 密钥
+anthropic: {}
 
 # Azure OpenAI 配置
 azure_openai:
-  api_key: ""
   azure_endpoint: ""  # 例如: https://your-resource.openai.azure.com/
   api_version: "2024-02-01"
 
@@ -40,11 +36,23 @@ google_vertexai:
 # LiteLLM 代理配置
 litellm:
   api_base: "http://localhost:4000"  # LiteLLM 代理服务器地址
-  api_key: "sk-KTCqa2aigDsZpT.Z*oU.giDLPLW"  # LiteLLM master key
 
 # 生成参数
 generation:
-  max_tokens: 131072  # 128K, within minimax-2.7 limit
-  # max_tokens: 500000  # within kimi-k2.5 limit 
+  max_tokens: 131072
   temperature: 0.4
   top_p: 0.7
+
+# 分块阈值比例，均基于 generation.max_tokens 计算
+chunking:
+  body_ratio: 0.45
+  summary_ratio: 0.10
+  intro_summary_input_ratio: 0.15
+  single_summary_input_multiplier: 2
+
+# 各阶段生成文本的长度约束
+optimization:
+  single_summary_length: 400
+  chunk_summary_length: 300
+  intro_length: 100
+  summary_length: 150

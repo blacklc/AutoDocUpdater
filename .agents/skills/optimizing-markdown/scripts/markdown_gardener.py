@@ -3,7 +3,7 @@
 Markdown 文档优化工具
 
 该模块提供对 Markdown 文档进行优化处理的功能，使文档内容能够更好地
-在互联网技术博客平台上展示。通过单次 LLM 调用完成所有优化操作。
+在互联网技术博客平台上展示。通过多阶段 LLM 调用完成所有优化操作。
 """
 
 import argparse
@@ -18,8 +18,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from env_config import (
+    CONFIG_PATH,
+    EnvironmentConfigurationError,
+    check_environment,
+    format_environment_status,
+    load_base_config,
+)
+
+# 路径统一从脚本位置派生，避免依赖启动目录或 Agent 私有目录
+_SKILL_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _SKILL_ROOT.parents[2]
+_PROMPTS_DIR = _SKILL_ROOT / "prompts"
+_DEFAULT_LOG_DIR = _PROJECT_ROOT / "logs"
+
 # 将 skill 根目录添加到 Python 路径，以便导入 llm_client
-_SKILL_ROOT = Path(__file__).parent.parent
 if str(_SKILL_ROOT) not in sys.path:
     sys.path.insert(0, str(_SKILL_ROOT))
 
@@ -37,7 +50,7 @@ class OptimizeResult:
 class MarkdownGardener:
     """Markdown 文档优化器
 
-    通过单次 LLM 调用完成所有优化处理，包括：
+    通过多阶段 LLM 调用完成所有优化处理，包括：
     - 删除多余空白内容
     - 转换 tips 和注意格式为引用格式
     - 添加前言和总结章节
@@ -52,8 +65,7 @@ class MarkdownGardener:
         file_path: str,
         logger: Optional[logging.Logger] = None,
         llm_client: Optional["LLMClient"] = None,
-        prompt_template_dir: Optional[str] = None,
-        api_key: Optional[str] = None
+        prompt_template_dir: Optional[str] = None
     ):
         """初始化优化器
 
@@ -65,14 +77,11 @@ class MarkdownGardener:
         @type  llm_client: Optional[LLMClient]
         @param prompt_template_dir: Prompt 模板目录
         @type  prompt_template_dir: Optional[str]
-        @param api_key: LLM API 密钥，用于覆盖配置文件中的设置
-        @type  api_key: Optional[str]
         """
         self.file_path = Path(file_path)
         self.logger = logger
         self.content: list[str] = []
         self.operations: list[str] = []
-        self._api_key = api_key
 
         # 初始化 LLM 客户端
         if llm_client is not None:
@@ -113,25 +122,13 @@ class MarkdownGardener:
         if self._llm_client is None:
             from llm_client import LLMClient
 
-            # 获取配置文件路径
-            config_path = _SKILL_ROOT / "conf" / "config.yaml"
-
-            # 如果提供了 api_key，传递给 LLMClient
-            if self._api_key:
-                self._llm_client = LLMClient(
-                    config_path=str(config_path),
-                    api_key=self._api_key
-                )
-            else:
-                self._llm_client = LLMClient(config_path=str(config_path))
+            self._llm_client = LLMClient(config_path=str(CONFIG_PATH))
 
         return self._llm_client
 
-    def _get_prompt_template(self, name: str = "optimize") -> "PromptTemplate":
+    def _get_prompt_template(self) -> "PromptTemplate":
         """获取 Prompt 模板管理器实例
 
-        @param name: 模板名称，不含扩展名
-        @type  name: str
         @return: Prompt 模板管理器
         @rtype:  PromptTemplate
         """
@@ -139,9 +136,7 @@ class MarkdownGardener:
 
         if self._prompt_template_dir:
             return PromptTemplate(self._prompt_template_dir)
-        else:
-            template_dir = _SKILL_ROOT / "prompts"
-            return PromptTemplate(str(template_dir))
+        return PromptTemplate(str(_PROMPTS_DIR))
 
     def _load_prompt(self, name: str, **kwargs) -> str:
         """加载并渲染指定的 prompt 模板
@@ -153,7 +148,7 @@ class MarkdownGardener:
         @return: 渲染后的 prompt
         @rtype:  str
         """
-        prompt_template = self._get_prompt_template(name)
+        prompt_template = self._get_prompt_template()
         return prompt_template.render(name, **kwargs)
 
     def load(self) -> None:
@@ -184,11 +179,16 @@ class MarkdownGardener:
         })
 
     def optimize(self) -> OptimizeResult:
-        """使用 LLM 一次性完成所有优化操作
+        """使用多阶段 LLM 完成所有优化操作
 
         @return: 优化结果
         @rtype:  OptimizeResult
+        @raises EnvironmentConfigurationError: LLM 环境变量未配置完整时抛出
         """
+        status = check_environment()
+        if not status.configured:
+            raise EnvironmentConfigurationError(status)
+
         try:
             self.load()
 
@@ -244,25 +244,44 @@ class MarkdownGardener:
         - 摘要 chunk：max_tokens 的约 10%
         - 前言总结输入：max_tokens 的约 15%
         """
-        import yaml
-
-        config_path = _SKILL_ROOT / "conf" / "config.yaml"
-        with open(config_path, "r", encoding="utf-8") as f:
-            self._config = yaml.safe_load(f)
+        self._config = load_base_config(CONFIG_PATH)
 
         max_tokens = self._config.get("generation", {}).get("max_tokens", 131072)
+        chunking_config = self._config.get("chunking", {})
+        optimization_config = self._config.get("optimization", {})
+
+        body_ratio = float(chunking_config.get("body_ratio", 0.45))
+        summary_ratio = float(chunking_config.get("summary_ratio", 0.10))
+        intro_summary_ratio = float(chunking_config.get("intro_summary_input_ratio", 0.15))
+
+        self.SINGLE_SUMMARY_INPUT_MULTIPLIER = int(
+            chunking_config.get("single_summary_input_multiplier", 2)
+        )
+        self.SINGLE_SUMMARY_LENGTH = int(
+            optimization_config.get("single_summary_length", 400)
+        )
+        self.CHUNK_SUMMARY_LENGTH = int(
+            optimization_config.get("chunk_summary_length", 300)
+        )
+        self.INTRO_LENGTH = int(optimization_config.get("intro_length", 100))
+        self.SUMMARY_LENGTH = int(optimization_config.get("summary_length", 150))
 
         # 根据 max_tokens 计算 chunk 大小（按字符计，约等于 token 数的 1/4）
-        self.MAX_CHUNK_SIZE = int(max_tokens * 0.45)          # 正文优化 chunk
-        self.MAX_SUMMARY_CHUNK_SIZE = int(max_tokens * 0.10)  # 摘要生成 chunk
-        self.MAX_INTRO_SUMMARY_INPUT = int(max_tokens * 0.15)  # 前言总结输入
+        self.MAX_CHUNK_SIZE = int(max_tokens * body_ratio)
+        self.MAX_SUMMARY_CHUNK_SIZE = int(max_tokens * summary_ratio)
+        self.MAX_INTRO_SUMMARY_INPUT = int(max_tokens * intro_summary_ratio)
 
         self._log("info", {
             "event": "chunk_sizes_initialized",
             "max_tokens": max_tokens,
             "max_chunk_size": self.MAX_CHUNK_SIZE,
             "max_summary_chunk_size": self.MAX_SUMMARY_CHUNK_SIZE,
-            "max_intro_summary_input": self.MAX_INTRO_SUMMARY_INPUT
+            "max_intro_summary_input": self.MAX_INTRO_SUMMARY_INPUT,
+            "single_summary_input_multiplier": self.SINGLE_SUMMARY_INPUT_MULTIPLIER,
+            "single_summary_length": self.SINGLE_SUMMARY_LENGTH,
+            "chunk_summary_length": self.CHUNK_SUMMARY_LENGTH,
+            "intro_length": self.INTRO_LENGTH,
+            "summary_length": self.SUMMARY_LENGTH
         })
 
     def _remove_base64_images(self, content: str) -> tuple[str, int]:
@@ -373,7 +392,7 @@ class MarkdownGardener:
             "event": "stage3_generate_intro_summary_start"
         })
 
-        intro_summary = self._generate_intro_summary(optimized_body, summary)
+        intro_summary = self._generate_intro_summary(summary)
 
         self._log("info", {
             "event": "stage3_generate_intro_summary_complete"
@@ -476,7 +495,7 @@ class MarkdownGardener:
         @rtype:  str
         """
         # 限制输入长度
-        max_input = self.MAX_SUMMARY_CHUNK_SIZE * 2
+        max_input = self.MAX_SUMMARY_CHUNK_SIZE * self.SINGLE_SUMMARY_INPUT_MULTIPLIER
         content_input = content[:max_input] if len(content) > max_input else content
 
         prompt = self._load_prompt(
@@ -484,7 +503,7 @@ class MarkdownGardener:
             chunk_index=1,
             total_chunks=1,
             content=content_input,
-            summary_length=400
+            summary_length=self.SINGLE_SUMMARY_LENGTH
         )
 
         llm_client = self._get_llm_client()
@@ -528,7 +547,7 @@ class MarkdownGardener:
                 chunk_index=i + 1,
                 total_chunks=total_chunks,
                 content=chunk,
-                summary_length=300
+                summary_length=self.CHUNK_SUMMARY_LENGTH
             )
 
             llm_client = self._get_llm_client()
@@ -552,24 +571,22 @@ class MarkdownGardener:
 
         return combined_summary
 
-    def _generate_intro_summary(self, optimized_body: str, summary: str) -> dict:
+    def _generate_intro_summary(self, summary: str) -> dict:
         """基于摘要生成前言和总结
 
-        @param optimized_body: 优化后的正文
-        @type  optimized_body: str
         @param summary: 文章摘要
         @type  summary: str
         @return: {"intro": 前言, "summary": 总结}
         @rtype:  dict
         """
         # 限制输入长度
-        summary_input = summary[:20000] if len(summary) > 20000 else summary
+        summary_input = summary[:self.MAX_INTRO_SUMMARY_INPUT]
 
         prompt = self._load_prompt(
             "intro_summary",
             summary=summary_input,
-            intro_length=100,
-            summary_length=150
+            intro_length=self.INTRO_LENGTH,
+            summary_length=self.SUMMARY_LENGTH
         )
 
         llm_client = self._get_llm_client()
@@ -679,65 +696,6 @@ class MarkdownGardener:
 
         return result
 
-    def _optimize_single_chunk(self, article_content: str) -> str:
-        """优化单个内容块
-
-        @param article_content: 内容块
-        @type  article_content: str
-        @return: 优化后的内容
-        @rtype:  str
-        """
-        prompt_template = self._get_prompt_template()
-        prompt = prompt_template.render("optimize", article_content=article_content)
-
-        llm_client = self._get_llm_client()
-        llm_response = llm_client.generate(prompt)
-
-        self._log("info", {
-            "event": "llm_called",
-            "model": llm_client.get_model_name(),
-            "prompt_length": len(prompt),
-            "response_length": len(llm_response)
-        })
-
-        return llm_response
-
-    def _optimize_with_chunking(self, article_content: str) -> str:
-        """分块处理长文章
-
-        @param article_content: 文章完整内容
-        @type  article_content: str
-        @return: 优化后的文章内容
-        @rtype:  str
-        """
-        chunks = self._split_into_chunks(article_content)
-        total_chunks = len(chunks)
-        self._log("info", {
-            "event": "chunking_started",
-            "total_chunks": total_chunks,
-            "total_length": len(article_content)
-        })
-
-        optimized_chunks = []
-        for i, chunk in enumerate(chunks):
-            self._log("info", {
-                "event": "processing_chunk",
-                "chunk_index": i + 1,
-                "chunk_length": len(chunk)
-            })
-            optimized = self._optimize_single_chunk(chunk)
-            optimized_chunks.append(optimized)
-
-        result = "\n\n---\n\n".join(optimized_chunks)
-
-        self._log("info", {
-            "event": "chunking_completed",
-            "total_chunks": total_chunks,
-            "result_length": len(result)
-        })
-        return result
-
-
     def _split_into_chunks(self, content: str, max_size: int = None) -> list[str]:
         """将长文章分割成多个块，在标题处分割以保持结构完整
 
@@ -776,72 +734,13 @@ class MarkdownGardener:
 
         return chunks
 
-    def _optimize_single_chunk(self, article_content: str) -> str:
-        """优化单个内容块（保留用于兼容）
-
-        @param article_content: 内容块
-        @type  article_content: str
-        @return: 优化后的内容
-        @rtype:  str
-        """
-        prompt_template = self._get_prompt_template()
-        prompt = prompt_template.render("optimize", article_content=article_content)
-
-        llm_client = self._get_llm_client()
-        llm_response = llm_client.generate(prompt)
-
-        self._log("info", {
-            "event": "llm_called",
-            "model": llm_client.get_model_name(),
-            "prompt_length": len(prompt),
-            "response_length": len(llm_response)
-        })
-
-        return llm_response
-
-    def _optimize_with_chunking(self, article_content: str) -> str:
-        """分块处理长文章（保留用于兼容）
-
-        @param article_content: 文章完整内容
-        @type  article_content: str
-        @return: 优化后的文章内容
-        @rtype:  str
-        """
-        chunks = self._split_into_chunks(article_content)
-        total_chunks = len(chunks)
-        self._log("info", {
-            "event": "chunking_started",
-            "total_chunks": total_chunks,
-            "total_length": len(article_content)
-        })
-
-        optimized_chunks = []
-        for i, chunk in enumerate(chunks):
-            self._log("info", {
-                "event": "processing_chunk",
-                "chunk_index": i + 1,
-                "chunk_length": len(chunk)
-            })
-            optimized = self._optimize_single_chunk(chunk)
-            optimized_chunks.append(optimized)
-
-        result = "\n\n---\n\n".join(optimized_chunks)
-
-        self._log("info", {
-            "event": "chunking_completed",
-            "total_chunks": total_chunks,
-            "result_length": len(result)
-        })
-        return result
-
-
 FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d %(message)s"
 
 
 def setup_logging(log_file: str = None) -> logging.Logger:
     """配置日志系统
 
-    @param log_file: 日志文件路径，默认保存在 skill 目录所在目录的 logs 目录中
+    @param log_file: 日志文件路径，默认保存在项目根目录的 logs 目录中
     @type  log_file: str
     @return: 配置好的日志记录器
     @rtype:  logging.Logger
@@ -850,11 +749,7 @@ def setup_logging(log_file: str = None) -> logging.Logger:
     logger.setLevel(logging.INFO)
 
     if log_file is None:
-        # 基于脚本文件位置计算路径，logs 目录与 skills 目录平级
-        script_path = Path(__file__)
-        # .claude/skills/optimizing-markdown/scripts/ -> .claude/skills/
-        logs_dir = script_path.parents[2] / "logs"
-        log_file = logs_dir / "markdown_gardener.log"
+        log_file = _DEFAULT_LOG_DIR / "markdown_gardener.log"
 
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -929,14 +824,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-l", "--log",
         default=None,
-        help="日志文件路径, 默认: skill 目录所在目录的 logs 目录"
-    )
-
-    parser.add_argument(
-        "--api-key",
-        type=str,
-        default=None,
-        help="LLM API 密钥，用于覆盖配置文件中的设置"
+        help="日志文件路径, 默认: 项目根目录下的 logs 目录"
     )
 
     return parser.parse_args()
@@ -952,6 +840,11 @@ def main() -> int:
         args = parse_arguments()
         validate_arguments(args)
 
+        status = check_environment()
+        if not status.configured:
+            print(format_environment_status(status), file=sys.stderr)
+            return 2
+
         logger = setup_logging(args.log)
 
         log_json(logger, "info", {
@@ -959,7 +852,7 @@ def main() -> int:
             "file": args.file
         })
 
-        gardener = MarkdownGardener(args.file, logger, api_key=args.api_key)
+        gardener = MarkdownGardener(args.file, logger)
         result = gardener.optimize()
 
         if result.success:
@@ -983,6 +876,9 @@ def main() -> int:
             })
             return 1
 
+    except EnvironmentConfigurationError as e:
+        print(format_environment_status(e.status), file=sys.stderr)
+        return 2
     except ValueError as e:
         print(f"\n参数错误: {e}", file=sys.stderr)
         print("使用 --help 查看帮助信息", file=sys.stderr)

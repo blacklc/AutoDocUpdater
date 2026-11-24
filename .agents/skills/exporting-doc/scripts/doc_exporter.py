@@ -7,6 +7,7 @@ MAC OS 备忘录导出工具
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import logging.handlers
@@ -14,6 +15,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -22,11 +25,26 @@ from pathlib import Path
 from typing import Optional
 
 
+_SKILL_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _SKILL_ROOT.parents[2]
+_DEFAULT_EXPORT_DIR = _PROJECT_ROOT / "tmp"
+_DEFAULT_LOG_DIR = _PROJECT_ROOT / "logs"
+_NOTES_LOCK_FILE = _PROJECT_ROOT / "tmp" / "notes_exporter.lock"
+
+
 class ExportFormat(Enum):
     """导出格式枚举"""
 
     MARKDOWN = "md"
     PDF = "pdf"
+
+
+class NotesQueryError(RuntimeError):
+    """备忘录 AppleScript 查询失败"""
+
+
+class NotesExportBusyError(RuntimeError):
+    """已有其他进程正在执行备忘录导出"""
 
 
 @dataclass
@@ -58,6 +76,17 @@ class NotesExporter:
     def _ensure_output_dir(self) -> None:
         """确保输出目录存在，不存在则创建"""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def check_health(self) -> None:
+        """检查备忘录 AppleScript 通信是否正常
+
+        @raises NotesQueryError: 备忘录不可访问或 AppleScript 通信失败时抛出
+        """
+        self._run_notes_script(
+            'tell application "Notes" to return count of accounts',
+            timeout=10,
+            operation="备忘录健康检查",
+        )
 
     def _html_to_markdown(self, html_content: str) -> str:
         """将 HTML 内容转换为 Markdown
@@ -139,12 +168,18 @@ class NotesExporter:
         @rtype:  str
         @raises: Exception 导出失败时抛出异常
         """
+        safe_name = self._sanitize_filename(note_name)
+        pdf_path = self.output_dir / f"{safe_name}.pdf"
+        desktop_path = Path.home() / "Desktop" / pdf_path.name
+        if desktop_path.exists():
+            raise RuntimeError(
+                f"桌面已存在同名 PDF，无法安全自动覆盖: {desktop_path}。"
+                "请先移走或重命名该文件后重试。"
+            )
+
         content = self._get_note_content(note_name)
         if content is None:
             raise ValueError(f"未找到文章: {note_name}")
-
-        safe_name = self._sanitize_filename(note_name)
-        pdf_path = self.output_dir / f"{safe_name}.pdf"
 
         self._export_note_to_pdf_via_notes(note_name, pdf_path)
         return str(pdf_path)
@@ -181,45 +216,167 @@ class NotesExporter:
         # 移除所有空白字符并转为小写
         return re.sub(r'\s+', '', note_name).lower()
 
-    def _find_note_by_fuzzy_match(self, note_name: str) -> Optional[str]:
-        """通过模糊匹配查找备忘录文章
+    @staticmethod
+    def _escape_applescript_string(value: str) -> str:
+        """转义 AppleScript 字符串
 
-        当精确匹配失败时，使用标准化后的名称进行模糊匹配。
+        @param value: 原始字符串
+        @type  value: str
+        @return: 可安全嵌入 AppleScript 的字符串
+        @rtype:  str
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _run_notes_script(self, script: str, timeout: int, operation: str) -> str:
+        """执行备忘录 AppleScript 并区分超时与执行失败
+
+        @param script: AppleScript 内容
+        @type  script: str
+        @param timeout: 超时秒数
+        @type  timeout: int
+        @param operation: 操作描述
+        @type  operation: str
+        @return: 标准输出
+        @rtype:  str
+        @raises NotesQueryError: 超时或命令执行失败时抛出
+        """
+        transient_markers = (
+            "connection invalid",
+            "hiservices-xpcservice",
+            "connection is invalid",
+        )
+
+        for attempt in range(1, 3):
+            script_path = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    suffix=".applescript",
+                    delete=False,
+                ) as script_file:
+                    script_file.write(script)
+                    script_path = script_file.name
+
+                result = subprocess.run(
+                    ["osascript", script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise NotesQueryError(f"{operation}超时（{timeout}秒）") from exc
+            except Exception as exc:
+                raise NotesQueryError(f"{operation}执行失败: {exc}") from exc
+            finally:
+                if script_path:
+                    try:
+                        Path(script_path).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+            if result.returncode == 0:
+                return result.stdout.strip()
+
+            detail = (result.stderr or result.stdout).strip()[:300]
+            is_transient = any(
+                marker in detail.lower() for marker in transient_markers
+            )
+            if attempt == 1 and is_transient:
+                time.sleep(0.5)
+                continue
+            raise NotesQueryError(f"{operation}失败: {detail}")
+
+        raise NotesQueryError(f"{operation}失败")
+
+    @staticmethod
+    def _parse_note_names(output: str) -> list[str]:
+        """解析 AppleScript 返回的笔记名称列表
+
+        @param output: 使用 ``|||`` 分隔的输出
+        @type  output: str
+        @return: 去重后的笔记名称
+        @rtype:  list[str]
+        """
+        if not output or output in {"{}", "NOTE_NOT_FOUND"}:
+            return []
+        names = []
+        for name in output.split("|||"):
+            name = name.strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    def _query_note_body(self, note_name: str) -> Optional[str]:
+        """按精确名称查询笔记正文
+
+        @param note_name: 笔记名称
+        @type  note_name: str
+        @return: 正文；不存在时返回 None
+        @rtype:  Optional[str]
+        @raises NotesQueryError: AppleScript 查询失败时抛出
+        """
+        escaped_name = self._escape_applescript_string(note_name)
+        script = f'''
+        tell application "Notes"
+            set matches to every note whose name is "{escaped_name}"
+            if (count of matches) is 0 then return "NOTE_NOT_FOUND"
+            return body of item 1 of matches
+        end tell
+        '''
+        content = self._run_notes_script(
+            script,
+            timeout=60,
+            operation=f"读取文章《{note_name}》",
+        )
+        return None if content == "NOTE_NOT_FOUND" else content
+
+    def _find_note_by_fuzzy_match(self, note_name: str) -> Optional[str]:
+        """通过受限名称查询查找备忘录文章
+
+        只查询名称包含目标文本的笔记，不再扫描全部笔记。
 
         @param note_name: 文章名称
         @type  note_name: str
         @return: 匹配到的实际文章名称，匹配失败时返回 None
         @rtype:  Optional[str]
+        @raises NotesQueryError: AppleScript 查询失败时抛出
         """
-        script = '''
+        needle = self._sanitize_note_name(note_name)
+        if not needle:
+            return None
+
+        escaped_needle = self._escape_applescript_string(needle)
+        script = f'''
         tell application "Notes"
-            set allNotes to every note
-            return name of allNotes
+            set matches to every note whose name contains "{escaped_needle}"
+            if (count of matches) is 0 then return "NOTE_NOT_FOUND"
+            set matchedNames to {{}}
+            repeat with matchedNote in matches
+                set end of matchedNames to name of matchedNote
+            end repeat
+            set AppleScript's text item delimiters to "|||"
+            set outputText to matchedNames as string
+            set AppleScript's text item delimiters to ""
+            return outputText
         end tell
         '''
-
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            all_names = result.stdout.strip()
-            if not all_names or all_names == "{}":
-                return None
-
-            target_normalized = self._normalize_for_matching(note_name)
-
-            # 遍历所有文章名称进行模糊匹配
-            for name in all_names.split(","):
-                name = name.strip()
-                if self._normalize_for_matching(name) == target_normalized:
-                    return name
-
+        output = self._run_notes_script(
+            script,
+            timeout=60,
+            operation=f"模糊查找文章《{note_name}》",
+        )
+        names = self._parse_note_names(output)
+        if not names:
             return None
-        except Exception:
-            return None
+
+        target_normalized = self._normalize_for_matching(note_name)
+        for name in names:
+            if self._normalize_for_matching(name) == target_normalized:
+                return name
+        if len(names) == 1:
+            return names[0]
+        return None
 
     def _get_note_content(self, note_name: str) -> Optional[str]:
         """通过 AppleScript 获取备忘录文章内容
@@ -229,42 +386,15 @@ class NotesExporter:
         @return: 文章内容，文章不存在时返回 None
         @rtype:  Optional[str]
         """
-        # 先尝试清理后的精确名称
         sanitized_name = self._sanitize_note_name(note_name)
-
-        script = f'''
-        tell application "Notes"
-            set theNote to first note whose name is "{sanitized_name}"
-            if exists theNote then
-                return body of theNote
-            else
-                return "NOTE_NOT_FOUND"
-            end if
-        end tell
-        '''
-
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            content = result.stdout.strip()
-
-            if content == "NOTE_NOT_FOUND":
-                # 尝试模糊匹配
-                matched_name = self._find_note_by_fuzzy_match(note_name)
-                if matched_name:
-                    return self._get_note_content(matched_name)
-                return None
+        content = self._query_note_body(sanitized_name)
+        if content is not None:
             return content
-        except Exception:
-            # 尝试模糊匹配作为最后的备选方案
-            matched_name = self._find_note_by_fuzzy_match(note_name)
-            if matched_name:
-                return self._get_note_content(matched_name)
-            return None
+
+        matched_name = self._find_note_by_fuzzy_match(note_name)
+        if matched_name and matched_name != sanitized_name:
+            return self._query_note_body(matched_name)
+        return None
 
     def get_notes_by_tag_or_folder(self, tag_or_folder: str) -> list[str]:
         """通过 AppleScript 获取指定标签或文件夹下的所有文章名称
@@ -274,41 +404,35 @@ class NotesExporter:
         @return: 文章名称列表
         @rtype:  list[str]
         """
+        escaped_tag = self._escape_applescript_string(tag_or_folder)
         script = f'''
         tell application "Notes"
+            set matchedNames to {{}}
             try
-                set targetFolder to folder "{tag_or_folder}"
-                return name of every note of targetFolder
+                set targetFolder to folder "{escaped_tag}"
+                set matchedNames to name of every note of targetFolder
             on error
-                set noteList to every note
-                set matchingNotes to {{}}
-                repeat with eachNote in noteList
+                repeat with eachNote in every note
                     try
                         set noteTags to tags of eachNote
-                        if noteTags contains "{tag_or_folder}" then
-                            set end of matchingNotes to name of eachNote
+                        if noteTags contains "{escaped_tag}" then
+                            set end of matchedNames to name of eachNote
                         end if
                     end try
                 end repeat
-                return matchingNotes as string
             end try
+            set AppleScript's text item delimiters to "|||"
+            set outputText to matchedNames as string
+            set AppleScript's text item delimiters to ""
+            return outputText
         end tell
         '''
-
-        try:
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            output = result.stdout.strip()
-
-            if not output or output == "{}":
-                return []
-            return [name.strip() for name in output.split(",")]
-        except Exception:
-            return []
+        output = self._run_notes_script(
+            script,
+            timeout=120,
+            operation=f"查询标签或文件夹《{tag_or_folder}》",
+        )
+        return self._parse_note_names(output)
 
     def _export_note_to_pdf_via_notes(self, note_name: str, output_path: Path) -> str:
         """通过备忘录 App 导出 PDF
@@ -322,11 +446,18 @@ class NotesExporter:
         @raises: Exception 导出失败时抛出异常
         """
         desktop_path = Path.home() / "Desktop" / output_path.name
+        escaped_note_name = self._escape_applescript_string(note_name)
+
+        if desktop_path.exists():
+            raise RuntimeError(
+                f"桌面已存在同名 PDF，无法安全自动覆盖: {desktop_path}。"
+                "请先移走或重命名该文件后重试。"
+            )
 
         script = f'''
         tell application "Notes"
             activate
-            set theNote to first note whose name is "{note_name}"
+            set theNote to first note whose name is "{escaped_note_name}"
             show theNote
             delay 0.5
         end tell
@@ -349,14 +480,36 @@ class NotesExporter:
                 end tell
             end tell
         end tell
-        delay 0.5
         tell application "System Events"
-            keystroke return
+            tell process "Notes"
+                set panelFound to false
+                repeat 40 times
+                    try
+                        repeat with w in windows
+                            try
+                                repeat with e in UI elements of w
+                                    if role of e is "AXSheet" then set panelFound to true
+                                end repeat
+                            end try
+                        end repeat
+                    end try
+                    if panelFound then exit repeat
+                    delay 0.25
+                end repeat
+                if not panelFound then return "SAVE_PANEL_NOT_FOUND"
+                delay 0.75
+                key code 48
+                delay 0.2
+                key code 36
+            end tell
         end tell
         delay 0.5
         '''
 
         try:
+            import time
+
+            started_at = time.time()
             result = subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True,
@@ -367,19 +520,43 @@ class NotesExporter:
             if result.stderr and "not allow" in result.stderr.lower():
                 raise RuntimeError("需要辅助访问权限，请在系统设置 > 隐私与安全性 > 辅助功能 中授权")
 
-            import time
-            time.sleep(1)
+            if result.returncode != 0:
+                raise RuntimeError(f"PDF 导出脚本执行失败: {result.stderr.strip()}")
 
-            if desktop_path.exists():
+            if "SAVE_PANEL_NOT_FOUND" in result.stdout:
+                raise RuntimeError("等待 10 秒后仍未检测到备忘录 PDF 保存面板")
+
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                if desktop_path.exists() and desktop_path.stat().st_mtime >= started_at - 1:
+                    break
+                time.sleep(0.5)
+
+            for _ in range(10):
+                if desktop_path.exists() and desktop_path.stat().st_size > 0:
+                    break
+                time.sleep(0.5)
+
+            if desktop_path.exists() and desktop_path.stat().st_size > 0:
                 shutil.move(str(desktop_path), str(output_path))
                 return str(output_path)
 
-            if output_path.exists():
-                return str(output_path)
-
-            raise RuntimeError("PDF 导出失败，文件未生成")
+            subprocess.run(
+                ["osascript", "-e", 'tell application "System Events" to key code 53'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            desktop_path_str = str(desktop_path)
+            raise RuntimeError(f"PDF 保存面板未完成保存，未在桌面生成文件: {desktop_path_str}")
 
         except subprocess.TimeoutExpired:
+            subprocess.run(
+                ["osascript", "-e", 'tell application "System Events" to key code 53'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
             raise RuntimeError("PDF 导出超时")
         except RuntimeError:
             raise
@@ -400,6 +577,47 @@ class NotesExporter:
         return filename.strip()
 
 
+def acquire_notes_export_lock():
+    """获取备忘录导出进程锁
+
+    @return: 已加锁的文件句柄
+    @rtype:  object
+    @raises NotesExportBusyError: 已有其他导出进程持有锁时抛出
+    """
+    _NOTES_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = open(_NOTES_LOCK_FILE, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        lock_handle.seek(0)
+        owner = lock_handle.read().strip()
+        lock_handle.close()
+        detail = f"，当前持有进程: {owner}" if owner else ""
+        raise NotesExportBusyError(
+            "已有其他备忘录导出任务正在运行，请等待其完成后重试" + detail
+        ) from exc
+
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(f"pid={os.getpid()} started_at={datetime.now().isoformat()}\n")
+    lock_handle.flush()
+    return lock_handle
+
+
+def release_notes_export_lock(lock_handle) -> None:
+    """释放备忘录导出进程锁
+
+    @param lock_handle: 锁文件句柄
+    @type  lock_handle: object
+    """
+    if lock_handle is None:
+        return
+    try:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_handle.close()
+
+
 FORMAT = "%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d %(message)s"
 
 
@@ -415,11 +633,7 @@ def setup_logging(log_file: str = None) -> logging.Logger:
     logger.setLevel(logging.INFO)
 
     if log_file is None:
-        # 基于脚本文件位置计算路径，logs 目录与 skills 目录平级
-        script_path = Path(__file__)
-        # .claude/skills/exporting-doc/scripts/ -> .claude/skills/
-        logs_dir = script_path.parents[2] / "logs"
-        log_file = logs_dir / "doc_exporter.log"
+        log_file = _DEFAULT_LOG_DIR / "doc_exporter.log"
 
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -706,16 +920,22 @@ def main() -> int:
     @return: 程序退出码，0 表示成功，非 0 表示有错误
     @rtype:  int
     """
+    lock_handle = None
     try:
         args = parse_arguments()
         validate_arguments(args)
 
         if not args.dir:
-            # 默认保存到与 skills 目录平级的 tmp 目录
-            script_path = Path(__file__)
-            args.dir = str(script_path.parents[2] / "tmp")
+            args.dir = str(_DEFAULT_EXPORT_DIR)
 
         logger = setup_logging(args.log)
+
+        lock_handle = acquire_notes_export_lock()
+        NotesExporter(args.dir).check_health()
+        log_json(logger, "info", {
+            "event": "notes_health_check",
+            "status": "ok"
+        })
 
         doc_names = parse_doc_names(args.names) if args.names else []
         tag_name = args.tag
@@ -790,6 +1010,12 @@ def main() -> int:
 
         return 0 if result.failed["doc_nums"] == 0 else 1
 
+    except NotesExportBusyError as e:
+        print(f"\n备忘录导出任务冲突: {e}", file=sys.stderr)
+        return 1
+    except NotesQueryError as e:
+        print(f"\n备忘录查询失败: {e}", file=sys.stderr)
+        return 1
     except ValueError as e:
         print(f"\n参数错误: {e}", file=sys.stderr)
         print("使用 --help 查看帮助信息", file=sys.stderr)
@@ -801,6 +1027,8 @@ def main() -> int:
         print(f"\n未知错误: {e}", file=sys.stderr)
         traceback.print_exc()
         return 1
+    finally:
+        release_notes_export_lock(lock_handle)
 
 
 if __name__ == "__main__":

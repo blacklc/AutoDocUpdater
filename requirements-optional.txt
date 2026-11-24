@@ -1,0 +1,6 @@
+# Optional LLM provider dependencies
+langchain-openai
+langchain-google-vertexai
+
+# Optional SOCKS proxy support
+httpx[socks]>=0.28

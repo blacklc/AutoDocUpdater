@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-通过单次 LLM 调用完成所有优化，最小化 token 消耗：
+通过多阶段 LLM 调用完成所有优化，并按文章长度自动分块：
 
 1. 删除多余空白内容（词语间空格、过多空行）
 2. 将 `tips:` 内容转换为 `> Tips:` 引用格式
@@ -22,37 +22,97 @@
 ## 安装
 
 ```bash
-pip install pyyaml langchain-core langchain-anthropic
+# 在项目根目录执行
+pip install -r requirements.txt
+```
+
+OpenAI、Azure OpenAI 或 Google VertexAI Provider 还需要：
+
+```bash
+pip install -r requirements-optional.txt
 ```
 
 ## LLM 配置
 
-所有配置集中在 `conf/config.yaml`：
+`conf/config.yaml` 只保存非敏感参数，不得写入密钥：
 
 ```yaml
 provider: litellm
 
 litellm:
   api_base: "http://localhost:4000"
-  api_key: ""  # 填写你的密钥
 
 model:
-  litellm: minimax-m2.7
+  litellm: deepseek-flash
 
 generation:
-  max_tokens: 131072  # 128K, within minimax-2.7 limit
+  max_tokens: 131072
+  temperature: 0.4
+  top_p: 0.7
+
+chunking:
+  body_ratio: 0.45
+  summary_ratio: 0.10
+  intro_summary_input_ratio: 0.15
+  single_summary_input_multiplier: 2
+
+optimization:
+  single_summary_length: 400
+  chunk_summary_length: 300
+  intro_length: 100
+  summary_length: 150
 ```
 
 支持多种 LLM 提供者：OpenAI、Anthropic、Azure OpenAI、Google VertexAI、LiteLLM。
+
+### 环境变量
+
+通用变量：
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `AUTODOC_LLM_PROVIDER` | 否 | Provider，默认读取 `config.yaml` |
+| `AUTODOC_LLM_MODEL` | 否 | 模型名称，覆盖配置中的模型 |
+| `AUTODOC_LLM_API_BASE` | 视 Provider | OpenAI 兼容、Anthropic 兼容或 LiteLLM 地址 |
+| `AUTODOC_LLM_API_KEY` | 视 Provider | 非 Google VertexAI Provider 的 API Key |
+
+Provider 专属变量：
+
+| 变量 | 说明 |
+|------|------|
+| `AUTODOC_LLM_AZURE_ENDPOINT` | Azure OpenAI Endpoint |
+| `AUTODOC_LLM_AZURE_API_VERSION` | Azure API Version |
+| `AUTODOC_LLM_GOOGLE_PROJECT_ID` | Google Cloud Project ID |
+| `AUTODOC_LLM_GOOGLE_LOCATION` | Google VertexAI 区域 |
+
+### 环境预检
+
+```bash
+python3 .agents/skills/optimizing-markdown/scripts/check_env.py
+```
+
+- 返回码 `0`：配置完整。
+- 返回码 `2`：缺少变量，不得继续调用 LLM。
+
+### 交互式配置
+
+```bash
+python3 .agents/skills/optimizing-markdown/scripts/configure_env.py
+```
+
+配置脚本会隐藏输入密钥，写入 `~/.config/autodoc/env`，权限为 `0600`，并在 Shell 配置中加入受管理的加载区块。后续运行会自动读取该文件。如需在当前普通终端中立即使用，可执行：
+
+```bash
+source ~/.config/autodoc/env
+```
+
+或重新打开终端。
 
 ## 使用方法
 
 ```bash
 # 基本用法
-python -m markdown_gardener.markdown_gardener /path/to/document.md
-
-# 指定 API 密钥
-python -m markdown_gardener.markdown_gardener /path/to/doc.md --api-key "your-key"
+python3 .agents/skills/optimizing-markdown/scripts/markdown_gardener.py /path/to/document.md
 ```
 
 ## 命令行参数
@@ -60,8 +120,7 @@ python -m markdown_gardener.markdown_gardener /path/to/doc.md --api-key "your-ke
 | 参数 | 说明 |
 |------|------|
 | `file` | 要优化的 Markdown 文件路径（必填） |
-| `-l, --log` | 日志文件路径，默认：skill 目录所在目录的 logs 目录 |
-| `--api-key` | LLM API 密钥，覆盖配置文件中的设置 |
+| `-l, --log` | 日志文件路径，默认：项目根目录的 `logs/` 目录 |
 
 ## 优化示例
 
@@ -121,11 +180,16 @@ optimizing-markdown/
 ├── SKILL.md
 ├── scripts/
 │   ├── markdown_gardener.py  # 入口脚本
-│   └── llm_client.py        # LLM 客户端
+│   ├── llm_client.py         # LLM 客户端
+│   ├── env_config.py         # 环境变量合并与预检
+│   ├── check_env.py          # 环境预检命令
+│   └── configure_env.py      # 交互式环境配置
 ├── conf/
-│   └── config.yaml          # LLM 配置
+│   └── config.yaml           # 非敏感 LLM 配置
 ├── prompts/
-│   └── optimize.yaml        # 优化提示词模板
+│   ├── optimize_body.yaml    # 正文优化提示词
+│   ├── summary.yaml          # 摘要生成提示词
+│   └── intro_summary.yaml    # 前言和总结提示词
 └── references/
     └── README.md            # 本文档
 ```
@@ -222,7 +286,6 @@ provider: my_provider
 # Provider 特有配置
 my_provider:
   api_base: "https://api.example.com/v1"
-  api_key: "your-api-key-here"
 
 # 模型映射
 model:
@@ -251,7 +314,7 @@ generation:
 
 ## 日志
 
-日志保存在 skill 目录所在目录的 logs 目录中，JSON 格式：
+日志保存在项目根目录的 `logs/` 目录中，JSON 格式：
 
 ```json
 {
@@ -265,7 +328,7 @@ generation:
 
 ## 自定义 Prompt
 
-修改 `prompts/optimize.yaml` 可自定义优化行为和输出格式。
+可分别修改 `prompts/optimize_body.yaml`、`prompts/summary.yaml` 和 `prompts/intro_summary.yaml` 调整各阶段行为。
 
 ## 注意
 
