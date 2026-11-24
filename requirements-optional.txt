@@ -3,4 +3,4 @@ langchain-openai
 langchain-google-vertexai
 
 # Optional SOCKS proxy support
-httpx[socks]>=0.28
+httpx[socks]>=0.28.1
