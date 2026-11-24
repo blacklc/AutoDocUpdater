@@ -11,6 +11,13 @@
 ```注意: 任务中每一个步骤都需要使用一个独立的subagent来完成.```
 同时,因为所有subagent是独立运行的，它们之间没有数据共享; 因此务必要按照正确的顺序手动执行这个流程.
 
+# 步骤1执行前置条件
+
+- 步骤1的导出subagent必须使用`require_escalated`在沙箱外执行`doc_exporter.py`。
+- 禁止在Codex沙箱内执行备忘录健康检查或导出；沙箱内可能因`hiservices-xpcservice`连接失败而误报AppleScript错误。
+- 如果无法获得沙箱外执行权限，必须停止导出并报告，不得在沙箱内重试。
+- 执行导出时不要使用`-l`覆盖默认日志路径，失败日志必须写入`logs/doc_exporter.log`。
+
 # 步骤3执行前置条件
 
 - 启动 Chrome 前必须确保当前执行环境可写入 SeleniumProfile 和 Selenium 缓存。

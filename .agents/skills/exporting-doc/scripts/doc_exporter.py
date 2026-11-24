@@ -920,6 +920,7 @@ def main() -> int:
     @return: 程序退出码，0 表示成功，非 0 表示有错误
     @rtype:  int
     """
+    logger = None
     lock_handle = None
     try:
         args = parse_arguments()
@@ -931,7 +932,16 @@ def main() -> int:
         logger = setup_logging(args.log)
 
         lock_handle = acquire_notes_export_lock()
-        NotesExporter(args.dir).check_health()
+        try:
+            NotesExporter(args.dir).check_health()
+        except NotesQueryError as exc:
+            log_json(logger, "error", {
+                "event": "notes_health_check_failed",
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc)
+            })
+            raise
         log_json(logger, "info", {
             "event": "notes_health_check",
             "status": "ok"
@@ -1014,6 +1024,12 @@ def main() -> int:
         print(f"\n备忘录导出任务冲突: {e}", file=sys.stderr)
         return 1
     except NotesQueryError as e:
+        if logger:
+            log_json(logger, "error", {
+                "event": "script_failed",
+                "error_type": type(e).__name__,
+                "error": str(e)
+            })
         print(f"\n备忘录查询失败: {e}", file=sys.stderr)
         return 1
     except ValueError as e:

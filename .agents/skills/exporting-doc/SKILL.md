@@ -17,6 +17,15 @@ metadata:
 
 ---
 
+## Codex 沙箱权限
+
+- 在 Codex 沙箱环境中执行本 skill 时，必须使用 `require_escalated` 在沙箱外运行 `doc_exporter.py`。
+- 禁止在沙箱内执行备忘录健康检查或导出；沙箱对 Apple Events / `hiservices-xpcservice` 的隔离会导致连接失败。
+- 如果无法获得沙箱外执行权限，必须停止并报告权限原因，不得在沙箱内重试。
+- 正常调用时不要使用 `-l` 覆盖默认日志路径；导出日志和失败记录应写入项目根目录的 `logs/doc_exporter.log`。
+
+---
+
 ## Input
 用户需要提供需要导出的文章名称或是文章所带有的tag名称.用户可以一次性提供多篇文章的名称,也可以提供一个tag标签名来指定需要导出的多篇文章.
 
