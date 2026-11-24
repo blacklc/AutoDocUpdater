@@ -29,8 +29,31 @@ build/
 temp/
 tmp/
 *.tmp
+logs/
+SeleniumProfile/
 
 # Local settings
 settings.local.json
+.claude/
 .mcp.json
 .env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and coverage artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Local certificates and secrets
+*.pem
+*.key
+*.p12
+*.pfx
