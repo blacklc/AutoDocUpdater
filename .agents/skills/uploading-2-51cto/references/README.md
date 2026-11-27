@@ -6,6 +6,8 @@
 
 - 支持单个 Markdown 文件上传
 - 支持目录批量上传（逐个加载，避免内存溢出）
+- 支持在完整发布流程步骤1之前实时读取个人分类并让用户选择
+- 支持为整批文章指定同一个个人分类，缺失时自动创建
 - 使用 Selenium 自动化操作浏览器（XPath 元素定位）
 - 自动检测登录状态（支持 60 秒等待用户登录）
 - Chrome 用户数据目录复用（登录状态持久化）
@@ -31,11 +33,17 @@ pip install -r requirements.txt
 ## 使用方法
 
 ```bash
+# 发布前预检（必须在步骤1之前执行）：登录后读取个人分类
+python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --list-personal-categories
+
 # 上传单个文件
 python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py /path/to/article.md
 
 # 上传整个目录
 python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py /path/to/articles/
+
+# 使用预检阶段已确认的分类上传整批文章
+python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py /path/to/articles/ --personal-category "人工智能"
 
 # 用户确认后重传保留文件
 python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --retry-manifest
@@ -52,17 +60,30 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --discard-man
 | `--retry-manifest [PATH]` | 重传保留文件，默认读取 `tmp/51cto_retry.json` |
 | `--discard-manifest [PATH]` | 删除保留文件，默认读取 `tmp/51cto_retry.json` |
 | `--max-retries N` | 即时重试次数，默认 `1` |
+| `--personal-category NAME` | 整批文章统一使用的个人分类；不提供时不修改个人分类 |
+| `--list-personal-categories` | 登录后只读取并输出个人分类列表，不上传文件 |
 | `-l, --log` | 日志文件路径，默认保存到项目根目录的 `logs/` 目录 |
 
 ## 操作流程
 
-1. 程序会提示登录 51CTO 博客
-2. 请在浏览器中完成登录操作（如已登录可跳过）
+### 发布前预检（步骤1之前）
+
+1. 执行 `--list-personal-categories`；若提示登录，请先在打开的 Chrome 中完成登录，成功后再读取分类并询问用户
+2. 用户明确选择已有分类、新分类名称或不设置
+3. 记录该分类，预检完成后才启动步骤1
+
+### 上传执行（步骤3）
+
+1. 使用预检阶段确认的分类启动上传程序
+2. 上传前重新校验登录状态；若会话在导出或优化期间失效，提示具体原因并停止
 3. 程序自动检查登录状态，最多等待 60 秒
-4. 自动逐个上传 Markdown 文件
-5. 最终提交前发生瞬时失败时自动即时重试一次
-6. 重试耗尽后暂时保留文件并写入重试清单
-7. 上传完成后显示结果汇总
+4. 如指定个人分类，上传前实时校验；缺失时自动创建并保存验证
+5. 自动逐个上传 Markdown 文件，整批使用同一个分类
+6. 最终提交前发生瞬时失败时自动即时重试一次
+7. 重试耗尽后暂时保留文件并写入重试清单
+8. 上传完成后显示结果汇总
+
+步骤1-3中不得再次询问个人分类。
 
 ## 即时重试与用户确认
 
@@ -74,6 +95,7 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --discard-man
 - 用户同意时执行 `--retry-manifest`；重传仍失败时继续保留并再次询问。
 - 用户拒绝时执行 `--discard-manifest` 删除保留文件。
 - 用户未回复时不得删除。
+- 重传清单条目会记录个人分类；未显式覆盖时沿用记录值。清单包含多个个人分类时，必须通过 `--personal-category` 指定一个。
 
 ## 违禁词弹窗与分类选择
 
@@ -83,6 +105,25 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --discard-man
 - 弹窗存在但无法继续发布时，本次上传判定失败并进入即时重试流程。
 - 文章分类优先按文本“代码人生”定位。
 - 文本定位失败时才使用旧的固定 XPath 兜底，并记录警告日志。
+- 个人分类在完整发布流程的步骤1之前由用户显式确认，整批文章共用同一个值；步骤1-3中不得再次询问。
+- Agent 通过 `--list-personal-categories` 实时读取分类列表，不上传文件，也不使用过期缓存。
+- 动态读取分类时如果需要登录，Agent 必须提醒用户在打开的 Selenium Chrome 中辅助登录，并等待程序验证成功；登录超时、验证码、密码错误或会话失效时，先反馈具体原因并停止流程。
+- 预检完成后，上传前仍会重新校验登录态；如会话失效，按登录失败原因反馈并停止，不得继续上传。
+- 用户输入的新分类由脚本在填写文章前自动创建：打开分类管理页、点击“添加分类”、填写空分类名输入框、点击“保存”，并回读分类列表确认保存成功。
+- 自动创建或保存失败时，整批上传在开始前终止，并报告具体失败原因。
+- 脚本定位 `#selfType` 下拉框，点击后从 `.person-type` 下拉选项中按完整文本精确匹配。
+- 如果分类在预检后发生并发变化，本次上传会在最终提交前失败，并在错误中列出现有选项。
+
+## 已知偶发问题
+
+### 发布后提示“请选择二级分类”
+
+- 观察时间：2026-11-27，文章《Agent Skills》。
+- 现象：点击最终“发布”后，发布页出现“请选择二级分类”提示，脚本在 30 秒内未检测到明确的成功或失败结果，因此按 `verify_result` 未知状态保留文件并写入重试清单。
+- 实际结果：用户在 51CTO 用户中心确认该文章已进入“审核中”状态，说明文章实际已发布。
+- 初步判断：可能与平台文章分类校验有关，但目前仅出现一次，暂不修改脚本逻辑。
+- 处理原则：再次遇到相同现象时，以 51CTO 用户中心的状态为准。文章已存在或处于审核中时不要重传，执行 `--discard-manifest` 清理保留文件；确认文章不存在时才按重传流程处理。
+- 脚本仍保持“最终发布后结果未知不自动重试”的安全策略，避免重复发布。
 
 ## 项目结构
 
@@ -123,6 +164,13 @@ uploading-2-51cto/
 | `manual_login_completed` | 检测到用户已离开登录页 |
 | `login_failed` | 登录失败，包含原因代码和详细信息 |
 | `publish_clicked` | 点击发布按钮 |
+| `personal_categories_loaded` | 已从分类管理页读取个人分类列表 |
+| `personal_category_already_exists` | 上传前确认个人分类已存在 |
+| `personal_category_creation_started` | 上传前开始自动创建缺失的个人分类 |
+| `personal_category_created` | 缺失的个人分类已创建并保存验证成功 |
+| `personal_category_creation_failed` | 个人分类填写、保存或回读验证失败 |
+| `classify_control_not_found` | 分类管理页未找到预期的可见控件 |
+| `personal_category_selected` | 已从个人分类下拉框选择目标分类 |
 | `upload_retry_scheduled` | 最终提交前失败，安排即时重试 |
 | `publish_success` | 连续检测到可见的成功或审核中提示 |
 | `publish_result_unknown` | 超时后仍未检测到明确结果 |
@@ -142,6 +190,7 @@ uploading-2-51cto/
 ==================================================
 成功: 3 篇
 失败: 1 篇
+个人分类: 架构
 
 成功列表:
   - etcd watch特性

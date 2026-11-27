@@ -9,13 +9,15 @@
 - 从 macOS 备忘录按标签或文章名称导出 Markdown/PDF
 - 通过多阶段 LLM 优化 Markdown：前言、目录、章节、总结和代码格式
 - 使用 Selenium 将 Markdown 批量发布到 51CTO
+- 支持在完整发布流程的步骤1之前实时读取个人分类、由用户选择，并为整批文章使用同一个分类
+- 支持自动创建用户指定但当前不存在的个人分类
 - 支持登录状态持久化、提交前失败即时重试和失败文件重传清单
 - 所有步骤均提供 JSON 日志和结构化执行结果
 
 ## 流程
 
 ```text
-备忘录 → 导出 Markdown → LLM 优化 → 51CTO 发布
+51CTO 登录与个人分类预检 → 备忘录 → 导出 Markdown → LLM 优化 → 51CTO 发布
 ```
 
 项目包含三个独立 skill：
@@ -87,6 +89,16 @@ python3 .agents/skills/optimizing-markdown/scripts/check_env.py
 
 ## 使用
 
+### 0. 发布前预检（必须先于导出）
+
+在导出文章之前，先检查 51CTO 登录状态并读取实时个人分类：
+
+```bash
+python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --list-personal-categories
+```
+
+如果提示需要登录，请在打开的 Selenium Chrome 中完成登录。登录成功并显示分类列表后，必须由用户明确选择本批次使用的个人分类（已有分类、新分类名称或不设置）；用户确认后才能进入导出步骤。后续步骤不得再次询问分类。
+
 ### 1. 从备忘录导出
 
 ```bash
@@ -122,6 +134,9 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py path/to/artic
 # 上传整个目录
 python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py tmp/articles
 
+# 使用预检阶段已确认的分类上传整批文章
+python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py tmp/articles --personal-category "人工智能"
+
 # 重传失败保留文件
 python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --retry-manifest
 
@@ -133,7 +148,7 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --discard-man
 
 ### 使用 Codex 编排完整流程
 
-根目录的 [`AGENTS.md`](AGENTS.md) 定义了 Codex 的三步工作流。每个步骤必须使用独立 subagent，按顺序执行；不要在步骤 1 中并发启动多个备忘录导出任务。
+根目录的 [`AGENTS.md`](AGENTS.md) 定义了 Codex 的“发布前预检 + 三步”工作流。发布前预检必须在步骤1之前完成；步骤1-3各使用独立 subagent，按顺序执行；不要在步骤1中并发启动多个备忘录导出任务。
 
 ## 日志与本地数据
 
@@ -152,6 +167,7 @@ python3 .agents/skills/uploading-2-51cto/scripts/51cto_uploader.py --discard-man
 
 - 备忘录导出依赖 macOS Notes 和 AppleScript，不能在纯 Linux 环境运行。
 - 51CTO 页面结构变化可能导致上传脚本失效。
+- 51CTO 发布页偶发出现“请选择二级分类”提示，但文章可能已进入审核；此时以上传后的用户中心状态为准，不要盲目重传。详见 `references/README.md`。
 - LLM 优化会产生 API 调用费用，并受 Provider 可用性影响。
 - 当前没有自动化测试套件；正式使用前请先在小范围内验证。
 

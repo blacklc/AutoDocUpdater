@@ -55,6 +55,7 @@ _PUBLISH_STABLE_CONFIRM_SECONDS = 1
 _LOGIN_HOSTS = {"home.51cto.com", "passport.51cto.com"}
 _BLOG_HOST = "blog.51cto.com"
 _PUBLISH_PATH = "/blogger/publish"
+_CLASSIFY_URL = "https://blog.51cto.com/creative-center/classify"
 _MAX_RETRIES_DEFAULT = 1
 _RETRY_DELAY_SECONDS = 2
 _PUBLISH_RESULT_TIMEOUT_SECONDS = 30
@@ -179,6 +180,7 @@ class UploadResult:
 
     success_count: int = 0
     fail_count: int = 0
+    personal_category: str = ""
     success_files: list[str] = field(default_factory=list)
     fail_files: list[tuple[str, str]] = field(default_factory=list)
     success_paths: list[str] = field(default_factory=list)
@@ -204,6 +206,10 @@ class BrowserEnvironmentError(RuntimeError):
     def __init__(self, reason: str, message: str):
         self.reason = reason
         super().__init__(message)
+
+
+class PersonalCategoryError(RuntimeError):
+    """个人分类读取、创建或验证失败"""
 
 
 class BrowserAutomation:
@@ -393,10 +399,18 @@ class C51ctoUploader:
 
     # 发布页 URL
     PUBLISH_URL = "https://blog.51cto.com/blogger/publish"
+    CLASSIFY_URL = _CLASSIFY_URL
     PROHIBITED_POPUP_XPATH = "/html/body/div[2]/div[4]"
     CONTINUE_PUBLISH_XPATH = "/html/body/div[2]/div[4]/div/div[4]/button[1]"
     CATEGORY_TEXT_XPATH = "//*[@id='oneLever']//*[normalize-space()='代码人生']"
     CATEGORY_FALLBACK_XPATH = "//*[@id='oneLever']/div[22]"
+    PERSONAL_CATEGORY_FIELD_ID = "selfType"
+    PERSONAL_CATEGORY_CONTAINER_CSS = ".el-select.classification.person-type"
+    PERSONAL_CATEGORY_OPTION_CSS = ".el-select-dropdown__item"
+    CLASSIFY_ADD_BUTTON_CSS = "span.addClassify"
+    CLASSIFY_SAVE_BUTTON_CSS = "span.saveClassify"
+    CLASSIFY_CATEGORY_INPUT_CSS = "input.name[name^='Cate[']"
+    CLASSIFY_NEW_CATEGORY_INPUT_CSS = "input.name[name^='name[']"
 
     def __init__(self, logger: Optional[logging.Logger] = None):
         """初始化 51CTO 上传器
@@ -1032,11 +1046,17 @@ class C51ctoUploader:
             final_url=self._safe_current_url(),
         )
 
-    def _upload_single_file(self, file_path: str) -> PublishOutcome:
+    def _upload_single_file(
+        self,
+        file_path: str,
+        personal_category: Optional[str] = None,
+    ) -> PublishOutcome:
         """上传单个 Markdown 文件
 
         @param file_path: Markdown 文件路径
         @type  file_path: str
+        @param personal_category: 本批次统一的个人分类
+        @type  personal_category: Optional[str]
         @return: 发布结果
         @rtype:  PublishOutcome
         """
@@ -1082,6 +1102,10 @@ class C51ctoUploader:
             # 选择文章分类
             stage = "select_category"
             self._select_category(file_name)
+
+            if personal_category:
+                stage = "select_personal_category"
+                self._select_personal_category(file_name, personal_category)
 
             # 点击最终发布按钮
             stage = "final_submit"
@@ -1223,6 +1247,337 @@ class C51ctoUploader:
         except Exception as exc:
             raise RuntimeError(f"无法选择文章分类“代码人生”: {exc}") from exc
 
+    @staticmethod
+    def _normalize_personal_category(personal_category: Optional[str]) -> Optional[str]:
+        """规范化个人分类名称
+
+        @param personal_category: 用户指定的个人分类
+        @type  personal_category: Optional[str]
+        @return: 去除首尾空白后的分类名；未指定时返回 None
+        @rtype:  Optional[str]
+        """
+        if personal_category is None:
+            return None
+        normalized = personal_category.strip()
+        return normalized or None
+
+    def _find_personal_category_options(self, visible_only: bool = True) -> list:
+        """查找个人分类下拉框中的选项
+
+        @param visible_only: 是否只返回可见选项
+        @type  visible_only: bool
+        @return: 下拉选项元素列表
+        @rtype:  list
+        """
+        options = []
+        seen_ids = set()
+        containers = self._driver.find_elements(
+            "css selector",
+            self.PERSONAL_CATEGORY_CONTAINER_CSS,
+        )
+        for container in containers:
+            for option in container.find_elements(
+                "css selector",
+                self.PERSONAL_CATEGORY_OPTION_CSS,
+            ):
+                if option.id in seen_ids:
+                    continue
+                seen_ids.add(option.id)
+                options.append(option)
+
+        if visible_only:
+            options = [option for option in options if option.is_displayed()]
+        return options
+
+    def _select_personal_category(self, file_name: str, personal_category: str) -> None:
+        """从页面下拉框选择个人分类
+
+        @param file_name: 当前文章名称
+        @type  file_name: str
+        @param personal_category: 本批次统一的个人分类
+        @type  personal_category: str
+        @raises RuntimeError: 无法打开下拉框、找不到选项或选择未生效时抛出
+        """
+        from selenium.common.exceptions import TimeoutException
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        target = self._normalize_personal_category(personal_category)
+        if not target:
+            return
+
+        wait = WebDriverWait(self._driver, 10)
+        try:
+            field = wait.until(
+                EC.element_to_be_clickable(("id", self.PERSONAL_CATEGORY_FIELD_ID))
+            )
+            self._driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});",
+                field,
+            )
+            self._click_element(field)
+        except Exception as exc:
+            raise RuntimeError(f"无法打开个人分类下拉框“{target}”: {exc}") from exc
+
+        option = None
+        available_categories = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            options = self._find_personal_category_options(visible_only=True)
+            available_categories = [
+                (item.text or "").strip()
+                for item in options
+                if (item.text or "").strip()
+            ]
+            option = next(
+                (item for item in options if (item.text or "").strip() == target),
+                None,
+            )
+            if option is not None:
+                break
+            time.sleep(0.2)
+
+        if option is None:
+            if not available_categories:
+                available_categories = [
+                    (item.text or "").strip()
+                    for item in self._find_personal_category_options(visible_only=False)
+                    if (item.text or "").strip()
+                ]
+            available_text = "、".join(sorted(set(available_categories))) or "无"
+            raise RuntimeError(
+                f"无法选择个人分类“{target}”：下拉框中未找到该选项。"
+                f"当前可用分类：{available_text}"
+            )
+
+        try:
+            self._click_element(option)
+            WebDriverWait(self._driver, 5).until(
+                lambda _: (field.get_attribute("value") or "").strip() == target
+            )
+        except TimeoutException as exc:
+            actual = (field.get_attribute("value") or "").strip() or "空"
+            raise RuntimeError(
+                f"个人分类选择未生效：期望“{target}”，当前值为“{actual}”"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(f"点击个人分类“{target}”失败: {exc}") from exc
+
+        self._log("info", {
+            "event": "personal_category_selected",
+            "file": file_name,
+            "category": target,
+            "selector": f"#{self.PERSONAL_CATEGORY_FIELD_ID}",
+        })
+
+    def _click_first_visible(
+        self,
+        css_selector: str,
+        description: str,
+        timeout: float = 10,
+    ) -> None:
+        """点击第一个可见匹配元素
+
+        @param css_selector: CSS 选择器
+        @type  css_selector: str
+        @param description: 用于错误信息的元素描述
+        @type  description: str
+        @param timeout: 最长等待秒数
+        @type  timeout: float
+        @raises PersonalCategoryError: 找不到可见元素时抛出
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for element in self._driver.find_elements("css selector", css_selector):
+                try:
+                    if not element.is_displayed():
+                        continue
+                    self._driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center'});",
+                        element,
+                    )
+                    self._click_element(element)
+                    return
+                except Exception:
+                    continue
+            time.sleep(0.2)
+        message = f"分类管理页未找到可见的{description}"
+        self._log("error", {
+            "event": "classify_control_not_found",
+            "description": description,
+            "selector": css_selector,
+        })
+        raise PersonalCategoryError(message)
+
+    def _open_classify_page(self) -> None:
+        """打开并确认 51CTO 分类管理页可用
+
+        @raises PersonalCategoryError: 页面加载失败或登录会话失效时抛出
+        """
+        self._driver.get(self.CLASSIFY_URL)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                current_url = self._driver.current_url
+            except Exception as exc:
+                raise PersonalCategoryError(f"读取分类管理页状态失败：{exc}") from exc
+
+            if self._is_login_url(current_url):
+                raise PersonalCategoryError("登录会话已失效，无法读取 51CTO 个人分类。")
+
+            add_buttons = self._driver.find_elements(
+                "css selector",
+                self.CLASSIFY_ADD_BUTTON_CSS,
+            )
+            for button in add_buttons:
+                try:
+                    if button.is_displayed():
+                        return
+                except Exception:
+                    continue
+            time.sleep(0.5)
+
+        raise PersonalCategoryError(
+            f"分类管理页加载超时：{self._sanitize_url(self._driver.current_url)}"
+        )
+
+    def _read_personal_categories(self) -> list[str]:
+        """读取分类管理页中已保存的个人分类
+
+        @return: 按页面顺序去重后的分类名称
+        @rtype:  list[str]
+        """
+        values = self._driver.execute_script(r"""
+            return Array.from(document.querySelectorAll(arguments[0]))
+              .map((element) => (element.value || '').trim())
+              .filter(Boolean);
+        """, self.CLASSIFY_CATEGORY_INPUT_CSS)
+        return list(dict.fromkeys(values))
+
+    def _find_empty_new_category_input(self, timeout: float = 5):
+        """查找点击“添加分类”后新增的空分类名输入框
+
+        @param timeout: 最长等待秒数
+        @type  timeout: float
+        @return: 空分类名输入框元素
+        @raises PersonalCategoryError: 未找到新增行时抛出
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            elements = self._driver.find_elements(
+                "css selector",
+                self.CLASSIFY_NEW_CATEGORY_INPUT_CSS,
+            )
+            for element in reversed(elements):
+                try:
+                    if element.is_displayed() and not (element.get_attribute("value") or "").strip():
+                        return element
+                except Exception:
+                    continue
+            time.sleep(0.2)
+        message = "点击“添加分类”后未出现新的分类名输入框"
+        self._log("error", {
+            "event": "personal_category_creation_failed",
+            "reason": message,
+        })
+        raise PersonalCategoryError(message)
+
+    def list_personal_categories(self) -> list[str]:
+        """登录后实时读取 51CTO 个人分类列表
+
+        @return: 当前个人分类名称列表
+        @rtype:  list[str]
+        @raises LoginRequiredError: 登录失败时抛出
+        @raises PersonalCategoryError: 分类管理页不可用时抛出
+        """
+        self._check_login_status()
+        self._open_classify_page()
+        categories = self._read_personal_categories()
+        self._log("info", {
+            "event": "personal_categories_loaded",
+            "count": len(categories),
+        })
+        return categories
+
+    def _ensure_personal_category_exists(self, personal_category: Optional[str]) -> None:
+        """上传前确认个人分类存在，缺失时在分类管理页创建
+
+        @param personal_category: 用户在上传开始前确认的个人分类
+        @type  personal_category: Optional[str]
+        @raises PersonalCategoryError: 分类读取、创建或保存验证失败时抛出
+        """
+        target = self._normalize_personal_category(personal_category)
+        if not target:
+            return
+
+        self._open_classify_page()
+        categories = self._read_personal_categories()
+        if target in categories:
+            self._log("info", {
+                "event": "personal_category_already_exists",
+                "category": target,
+            })
+            return
+
+        self._log("info", {
+            "event": "personal_category_creation_started",
+            "category": target,
+        })
+        print(f"个人分类“{target}”不存在，正在 51CTO 分类管理页创建...")
+        self._click_first_visible(
+            self.CLASSIFY_ADD_BUTTON_CSS,
+            "“添加分类”按钮",
+        )
+        field = self._find_empty_new_category_input()
+        self._driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});",
+            field,
+        )
+        field.clear()
+        field.send_keys(target)
+        actual = (field.get_attribute("value") or "").strip()
+        if actual != target:
+            message = f"个人分类“{target}”填写失败，输入框当前值为“{actual or '空'}”。"
+            self._log("error", {
+                "event": "personal_category_creation_failed",
+                "category": target,
+                "reason": message,
+            })
+            raise PersonalCategoryError(message)
+
+        self._click_first_visible(
+            self.CLASSIFY_SAVE_BUTTON_CSS,
+            "“保存”按钮",
+        )
+
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if self._is_login_url(self._driver.current_url):
+                message = f"保存个人分类“{target}”时登录会话失效。"
+                self._log("error", {
+                    "event": "personal_category_creation_failed",
+                    "category": target,
+                    "reason": message,
+                })
+                raise PersonalCategoryError(message)
+            categories = self._read_personal_categories()
+            if target in categories:
+                self._log("info", {
+                    "event": "personal_category_created",
+                    "category": target,
+                })
+                print(f"个人分类“{target}”创建成功。")
+                return
+            time.sleep(0.5)
+
+        message = f"个人分类“{target}”保存后未出现在分类列表中，已停止上传。"
+        self._log("error", {
+            "event": "personal_category_creation_failed",
+            "category": target,
+            "reason": message,
+        })
+        raise PersonalCategoryError(message)
+
     def _manifest_path(self, manifest_path: Optional[str] = None) -> Path:
         """返回重试清单路径"""
         return Path(manifest_path) if manifest_path else _DEFAULT_RETRY_MANIFEST
@@ -1287,6 +1642,7 @@ class C51ctoUploader:
         title: str,
         outcome: PublishOutcome,
         attempts: int,
+        personal_category: Optional[str] = None,
     ) -> dict:
         """构建待用户确认的重试条目"""
         return {
@@ -1298,6 +1654,7 @@ class C51ctoUploader:
             "retry_safe": outcome.retry_safe,
             "final_submit_clicked": outcome.final_submit_clicked,
             "final_url": outcome.final_url,
+            "personal_category": self._normalize_personal_category(personal_category),
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -1314,10 +1671,17 @@ class C51ctoUploader:
             existing[entry["path"]] = entry
         self._save_retry_manifest(list(existing.values()), manifest_path)
 
-    def _upload_batch(self, files: list[Path], max_retries: int) -> UploadResult:
+    def _upload_batch(
+        self,
+        files: list[Path],
+        max_retries: int,
+        personal_category: Optional[str] = None,
+    ) -> UploadResult:
         """执行一批文件上传和即时重试"""
-        result = UploadResult()
+        personal_category = self._normalize_personal_category(personal_category)
+        result = UploadResult(personal_category=personal_category or "")
         self._check_login_status()
+        self._ensure_personal_category_exists(personal_category)
         total_attempts = 1 + max(0, max_retries)
 
         for file in files:
@@ -1329,7 +1693,10 @@ class C51ctoUploader:
             for attempt in range(1, total_attempts + 1):
                 attempts = attempt
                 try:
-                    outcome = self._upload_single_file(file_path)
+                    outcome = self._upload_single_file(
+                        file_path,
+                        personal_category=personal_category,
+                    )
                 except Exception as exc:
                     outcome = PublishOutcome(
                         success=False,
@@ -1368,7 +1735,13 @@ class C51ctoUploader:
             outcome.attempts = attempts
             result.fail_count += 1
             result.fail_files.append((title, message))
-            entry = self._build_retained_entry(file_path, title, outcome, attempts)
+            entry = self._build_retained_entry(
+                file_path,
+                title,
+                outcome,
+                attempts,
+                personal_category=personal_category,
+            )
             result.retained_files.append(entry)
             self._log("warning", {
                 "event": "upload_retained_for_user",
@@ -1392,6 +1765,7 @@ class C51ctoUploader:
         file_path: str,
         max_retries: int = _MAX_RETRIES_DEFAULT,
         manifest_path: Optional[str] = None,
+        personal_category: Optional[str] = None,
     ) -> UploadResult:
         """上传文件或目录中的所有 Markdown 文件
 
@@ -1401,11 +1775,14 @@ class C51ctoUploader:
         @type  max_retries: int
         @param manifest_path: 重试清单路径
         @type  manifest_path: Optional[str]
+        @param personal_category: 本批次统一的个人分类
+        @type  personal_category: Optional[str]
         @return: 上传结果
         @rtype:  UploadResult
         @raises ValueError: 路径无效时抛出
         @raises Exception: 未登录或浏览器操作失败时抛出
         """
+        personal_category = self._normalize_personal_category(personal_category)
         path = Path(file_path)
         if not path.exists():
             raise ValueError(f"路径不存在: {file_path}")
@@ -1419,26 +1796,53 @@ class C51ctoUploader:
 
         if not files:
             self._log("warning", {"event": "no_md_files", "path": str(path)})
-            return UploadResult()
+            return UploadResult(personal_category=personal_category or "")
 
         self._log("info", {
             "event": "batch_upload_start",
             "total_files": len(files),
             "max_retries": max(0, max_retries),
+            "personal_category": personal_category,
         })
-        result = self._upload_batch(files, max_retries)
+        result = self._upload_batch(
+            files,
+            max_retries,
+            personal_category=personal_category,
+        )
         self._merge_retry_manifest(result, manifest_path)
         return result
 
-    def retry_from_manifest(self, manifest_path: Optional[str] = None) -> UploadResult:
+    def retry_from_manifest(
+        self,
+        manifest_path: Optional[str] = None,
+        personal_category: Optional[str] = None,
+    ) -> UploadResult:
         """重传用户确认保留的文件
 
         @param manifest_path: 重试清单路径
         @type  manifest_path: Optional[str]
+        @param personal_category: 可选的新个人分类；未提供时沿用清单中记录的分类
+        @type  personal_category: Optional[str]
         @return: 用户确认重传结果
         @rtype:  UploadResult
         """
         entries = self._load_retry_manifest(manifest_path)
+        personal_category = self._normalize_personal_category(personal_category)
+        if personal_category is None:
+            manifest_categories = {
+                self._normalize_personal_category(entry.get("personal_category"))
+                for entry in entries
+            }
+            manifest_categories.discard(None)
+            if len(manifest_categories) > 1:
+                categories = "、".join(sorted(manifest_categories))
+                raise ValueError(
+                    "重试清单包含多个个人分类"
+                    f"（{categories}），请使用 --personal-category 指定一个分类"
+                )
+            if manifest_categories:
+                personal_category = next(iter(manifest_categories))
+
         files = []
         missing_paths = []
         for entry in entries:
@@ -1455,9 +1859,13 @@ class C51ctoUploader:
             })
         if not files:
             self._save_retry_manifest([], manifest_path)
-            return UploadResult()
+            return UploadResult(personal_category=personal_category or "")
 
-        result = self._upload_batch(files, max_retries=0)
+        result = self._upload_batch(
+            files,
+            max_retries=0,
+            personal_category=personal_category,
+        )
         self._save_retry_manifest(result.retained_files, manifest_path)
         return result
 
@@ -1632,6 +2040,19 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--personal-category",
+        type=str,
+        default=None,
+        help="整批文章统一使用的个人分类名称；不提供时不修改个人分类"
+    )
+
+    parser.add_argument(
+        "--list-personal-categories",
+        action="store_true",
+        help="登录后只读取并输出个人分类列表，不上传文件"
+    )
+
+    parser.add_argument(
         "-l", "--log",
         default=None,
         help="日志文件路径, 默认: 项目根目录下的 logs 目录"
@@ -1642,12 +2063,44 @@ def parse_arguments() -> argparse.Namespace:
         bool(args.path),
         args.retry_manifest is not None,
         args.discard_manifest is not None,
+        args.list_personal_categories,
     ])
     if selected_modes != 1:
-        parser.error("必须且只能提供 path、--retry-manifest、--discard-manifest 中的一种")
+        parser.error(
+            "必须且只能提供 path、--retry-manifest、--discard-manifest、"
+            "--list-personal-categories 中的一种"
+        )
     if args.max_retries < 0:
         parser.error("--max-retries 不能小于 0")
+    if args.personal_category is not None:
+        args.personal_category = args.personal_category.strip()
+        if not args.personal_category:
+            parser.error("--personal-category 不能为空")
+        if args.list_personal_categories:
+            parser.error("--list-personal-categories 不能与 --personal-category 同时使用")
     return args
+
+
+def print_personal_categories(categories: list[str]) -> None:
+    """打印个人分类列表
+
+    @param categories: 当前个人分类名称
+    @type  categories: list[str]
+    """
+    print("\n" + "=" * 50)
+    print("51CTO 个人分类列表")
+    print("=" * 50)
+    if categories:
+        print(f"当前共 {len(categories)} 个个人分类：")
+        for category in categories:
+            print(f"  - {category}")
+    else:
+        print("当前没有个人分类。")
+    print("\n请由用户明确选择：")
+    print("  - 使用上方一个已有分类")
+    print("  - 输入一个新分类名称")
+    print("  - 不设置个人分类")
+    print("=" * 50)
 
 
 def print_upload_summary(result: UploadResult, manifest_path: Optional[str] = None) -> None:
@@ -1663,6 +2116,7 @@ def print_upload_summary(result: UploadResult, manifest_path: Optional[str] = No
     print("=" * 50)
     print(f"成功: {result.success_count} 篇")
     print(f"失败: {result.fail_count} 篇")
+    print(f"个人分类: {result.personal_category or '未指定'}")
 
     if result.success_files:
         print("\n成功列表:")
@@ -1709,6 +2163,15 @@ def print_discard_summary(stats: dict) -> None:
     print("=" * 50)
 
 
+def print_login_notice() -> None:
+    """打印 51CTO 登录提示"""
+    print("=" * 50)
+    print("请事先在浏览器中完成 51CTO 博客的用户登陆操作")
+    print("读取个人分类或上传文章需要有效登录；如需登录，请在打开的 Chrome 中完成操作。")
+    print("=" * 50)
+    print()
+
+
 def main() -> int:
     """主入口函数
 
@@ -1728,25 +2191,36 @@ def main() -> int:
             finally:
                 uploader.cleanup()
 
+        if args.list_personal_categories:
+            logger.info("开始读取 51CTO 个人分类列表")
+            print_login_notice()
+            uploader = C51ctoUploader(logger)
+            try:
+                categories = uploader.list_personal_categories()
+                print_personal_categories(categories)
+                return 0
+            finally:
+                uploader.cleanup()
+
         target = args.path if args.path else args.retry_manifest
         logger.info(f"开始 51CTO 博客上传任务: {target}")
 
-        # 打印登录提示
-        print("=" * 50)
-        print("请事先在浏览器中完成 51CTO 博客的用户登陆操作")
-        print("=" * 50)
-        print()
+        print_login_notice()
 
         uploader = C51ctoUploader(logger)
 
         try:
             if args.retry_manifest is not None:
-                result = uploader.retry_from_manifest(args.retry_manifest)
+                result = uploader.retry_from_manifest(
+                    args.retry_manifest,
+                    personal_category=args.personal_category,
+                )
                 manifest_path = args.retry_manifest
             else:
                 result = uploader.upload_files(
                     args.path,
                     max_retries=args.max_retries,
+                    personal_category=args.personal_category,
                 )
                 manifest_path = str(_DEFAULT_RETRY_MANIFEST)
             print_upload_summary(result, manifest_path)
@@ -1760,6 +2234,10 @@ def main() -> int:
 
     except LoginRequiredError as e:
         print(f"\n{e.failure.format_for_user()}", file=sys.stderr)
+        return 1
+
+    except PersonalCategoryError as e:
+        print(f"\n个人分类处理失败: {e}", file=sys.stderr)
         return 1
 
     except ValueError as e:
